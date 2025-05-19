@@ -77,6 +77,7 @@ class Phi4MMConvertableModel(torch.nn.Module):
         return image, attention_mask
 
     def forward(self, image: torch.Tensor):
+        image = image.to(torch.float32) / 255.0
         dynamic_hd = torch.tensor(36).int()
         dyhd_base_resolution = torch.tensor(448).int()
 

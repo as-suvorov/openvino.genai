@@ -16,26 +16,13 @@ to_tensor_processor = v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=
 
 @functools.lru_cache
 def get_test_images():
-    url = "https://github.com/openvinotoolkit/openvino_notebooks/assets/29454499/d5fbbd1a-d484-415c-88cb-9986625b7b11"
-    x2h_image = Image.open("tall_image.png")
-    imgs_comb = np.vstack(
-        [np.array(x2h_image), np.array(x2h_image), np.array(x2h_image)]
-    )
-    imgs_comb = Image.fromarray(imgs_comb).convert("RGB")
     images = [
-        Image.open(BytesIO(requests.get(url).content)),
-        Image.open("unnamed.jpg"),
-        Image.open("final_results_chart.png"),
-        imgs_comb,
-    ]
-
-    images = [
-        torch.rand((3, 40000, 400)),
-        torch.rand((3, 400, 400)),
-        torch.rand((3, 200, 800)),
-        torch.rand((3, 800, 200)),
-        torch.rand((3, 530, 720)),
-        torch.rand((3, 1245, 1334)),
+        torch.randint(256, size=(3, 400, 400), dtype=torch.uint8),
+        torch.randint(256, size=(3, 200, 800), dtype=torch.uint8),
+        torch.randint(256, size=(3, 800, 200), dtype=torch.uint8),
+        torch.randint(256, size=(3, 530, 720), dtype=torch.uint8),
+        torch.randint(256, size=(3, 1245, 1334), dtype=torch.uint8),
+        torch.randint(256, size=(3, 1200, 768), dtype=torch.uint8),
     ]
     return [x for x in images]
 
@@ -47,7 +34,7 @@ def test_ov_model(
     images: list[torch.Tensor],
     targetRatios: torch.Tensor,
 ):
-    ov_model = ov.convert_model(pt_model, example_input=(images[0], targetRatios))
+    ov_model = ov.convert_model(pt_model, example_input=images[0])
 
     ov_model_path = ".vscode/vlm/models/preprocess_image.xml"
     ov.save_model(ov_model, ov_model_path)
@@ -57,7 +44,7 @@ def test_ov_model(
     print(f"====== {label} ====")
 
     for i, image in enumerate(images):
-        ov_outputs = ov_model((image, targetRatios))
+        ov_outputs = ov_model(image)
         ov_embeds = ov_outputs["input_image_embeds"]
         ov_image_sizes = np.array(
             (ov_outputs["image_height"], ov_outputs["image_width"])
@@ -65,14 +52,13 @@ def test_ov_model(
         ov_attention_mask = ov_outputs["image_attention_mask"]
         ov_num_img_tokens = ov_outputs["num_img_tokens"]
 
-        pt_output = pt_model(image, targetRatios)
+        pt_output = pt_model(image)
         pt_embeds = pt_output["input_image_embeds"]
         pt_image_sizes = np.array((pt_output["image_height"], pt_output["image_width"]))
         pt_attention_mask = pt_output["image_attention_mask"]
         pt_num_img_tokens = pt_output["num_img_tokens"]
 
-        pil_image = to_pil_processor(image)
-        original_outputs = original_model([pil_image])
+        original_outputs = original_model([to_pil_processor(image)])
         original_embeds = original_outputs["input_image_embeds"]
         original_image_sizes = original_outputs["image_sizes"]
         original_attention_mask = original_outputs["image_attention_mask"]
@@ -121,15 +107,15 @@ phi4_image_preprocessing_model = Phi4MMConvertableModel()
 # )
 
 
-ov_model = ov.convert_model(
-    phi4_image_preprocessing_model,
-    example_input=(get_test_images()[0], torch.tensor(constants.SORTED_TARGET_RATIOS)),
-)
+# ov_model = ov.convert_model(
+#     phi4_image_preprocessing_model,
+#     example_input=get_test_images()[0],
+# )
 
-ov_model_path = ".vscode/vlm/models/preprocess_image.xml"
-ov.save_model(ov_model, ov_model_path)
+# ov_model_path = ".vscode/vlm/models/preprocess_image.xml"
+# ov.save_model(ov_model, ov_model_path)
 
-ov_model = ov.compile_model(ov_model, "CPU")
+# ov_model = ov.compile_model(ov_model, "CPU")
 
 # from openvino_devtools import ov2py
 
@@ -137,10 +123,10 @@ ov_model = ov.compile_model(ov_model, "CPU")
 
 # print(result)
 
-# test_ov_model(
-#     "covertable pytorch vs ov",
-#     phi4_image_preprocessing_model,
-#     original_model,
-#     to_tensor_processor(get_test_images()),
-#     torch.tensor(constants.SORTED_TARGET_RATIOS),
-# )
+test_ov_model(
+    "covertable pytorch vs ov",
+    phi4_image_preprocessing_model,
+    original_model,
+    get_test_images(),
+    torch.tensor(constants.SORTED_TARGET_RATIOS),
+)
