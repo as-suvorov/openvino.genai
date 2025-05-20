@@ -13,12 +13,12 @@ tensor_to_pil = torchvision.transforms.v2.ToPILImage()
 model_id = "microsoft/Phi-4-multimodal-instruct"
 
 images = [
-    torch.randint(256, size=(3, 400, 400), dtype=torch.uint8),
-    torch.randint(256, size=(3, 200, 800), dtype=torch.uint8),
-    torch.randint(256, size=(3, 800, 200), dtype=torch.uint8),
-    torch.randint(256, size=(3, 530, 720), dtype=torch.uint8),
-    torch.randint(256, size=(3, 1245, 1334), dtype=torch.uint8),
-    torch.randint(256, size=(3, 1200, 768), dtype=torch.uint8),
+    torch.randint(256, size=(1, 3, 400, 400), dtype=torch.uint8),
+    torch.randint(256, size=(1, 3, 200, 800), dtype=torch.uint8),
+    torch.randint(256, size=(1, 3, 800, 200), dtype=torch.uint8),
+    torch.randint(256, size=(1, 3, 530, 720), dtype=torch.uint8),
+    torch.randint(256, size=(1, 3, 1245, 1334), dtype=torch.uint8),
+    torch.randint(256, size=(1, 3, 1200, 768), dtype=torch.uint8),
 ]
 
 processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
@@ -31,11 +31,11 @@ ov_model = ov.convert_model(
     example_input=images[0],
 )
 ov_compiled_model = ov.compile_model(ov_model, "CPU")
-ov.save_model(ov_model, "preprocess_image.xml")
+# ov.save_model(ov_model, "preprocess_image.xml")
 
 
 for i, image in enumerate(images):
-    preprocessed = processor.image_processor(tensor_to_pil(image))
+    preprocessed = processor.image_processor(tensor_to_pil(image[0]))
     original_embeds = preprocessed["input_image_embeds"]
     original_image_sizes = preprocessed["image_sizes"]
     original_attention_mask = preprocessed["image_attention_mask"]

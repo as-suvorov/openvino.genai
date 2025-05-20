@@ -77,7 +77,7 @@ class Phi4MMConvertableModel(torch.nn.Module):
         return image, attention_mask
 
     def forward(self, image: torch.Tensor):
-        image = image.to(torch.float32) / 255.0
+        image = image[0].to(torch.float32) / 255.0
         dynamic_hd = torch.tensor(36).int()
         dyhd_base_resolution = torch.tensor(448).int()
 
@@ -162,9 +162,9 @@ class Phi4MMConvertableModel(torch.nn.Module):
         # pad_to_max_num_crops, pad_mask_to_max_num_crops skipped as it's a batch feature
 
         return {
-            "input_image_embeds": hd_image_reshape,
+            "input_image_embeds": hd_image_reshape.unsqueeze(0),
             "image_height": torch.tensor(IMAGE_H),
             "image_width": torch.tensor(IMAGE_W),
-            "image_attention_mask": hd_masks_reshape,
-            "num_img_tokens": num_img_tokens,
+            "image_attention_mask": hd_masks_reshape.unsqueeze(0),
+            "num_img_tokens": num_img_tokens.unsqueeze(0),
         }
