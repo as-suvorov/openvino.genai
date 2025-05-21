@@ -47,7 +47,9 @@ class PositionIdsModel(torch.nn.Module):
 
             position_ids[batch_idx][p_attn_mask.view(-1).to(torch.bool)] = pos_ids
 
-        return position_ids
+        return {
+            "patch_position_ids": position_ids,
+        }
 
 
 class Phi4MMConvertableModel(torch.nn.Module):

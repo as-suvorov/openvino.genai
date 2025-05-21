@@ -151,7 +151,9 @@ def test_position_ids_model(
         main_model_attention_mask = main_model_outputs["image_attention_mask"]
 
         pt_start = time.time()
-        pt_position_ids = pt_model(main_model_embeds, main_model_attention_mask)
+        pt_position_ids = pt_model(main_model_embeds, main_model_attention_mask)[
+            "patch_position_ids"
+        ]
         pt_time = time.time() - pt_start
 
         ov_start = time.time()
@@ -160,13 +162,13 @@ def test_position_ids_model(
                 "input_image_embeds.1": main_model_embeds,
                 "image_attention_mask.1": main_model_attention_mask,
             }
-        )[0]
+        )["patch_position_ids"]
         ov_time = time.time() - ov_start
 
         print(f"\n\n=============  image {i}  =============")
         print(f"pt time: {pt_time:.4f} ov time: {ov_time:.4f}")
         print(
-            f"position_ids shapes: pt -> {pt_position_ids.shape}, ov -> {ov_position_ids.shape}"
+            f"patch_position_ids shapes: pt -> {pt_position_ids.shape}, ov -> {ov_position_ids.shape}"
         )
         assert np.all(np.array(pt_position_ids) == np.array(ov_position_ids))
 

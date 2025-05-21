@@ -54,7 +54,9 @@ for i, image in enumerate(images):
     image_attention_mask = preprocessed["image_attention_mask"]
 
     pt_start = time.perf_counter()
-    pt_position_ids = pt_model(input_image_embeds, image_attention_mask)
+    pt_position_ids = pt_model(input_image_embeds, image_attention_mask)[
+        "patch_position_ids"
+    ]
     pt_time = time.perf_counter() - pt_start
 
     ov_start = time.perf_counter()
@@ -63,12 +65,12 @@ for i, image in enumerate(images):
             "input_image_embeds.1": input_image_embeds,
             "image_attention_mask.1": image_attention_mask,
         }
-    )[0]
+    )["patch_position_ids"]
     ov_time = time.perf_counter() - ov_start
 
     print(f"\n\n=============  image {i}  =============")
     print(f"pt time: {pt_time:.4f} ov time: {ov_time:.4f}")
     print(
-        f"position_ids shapes: pt -> {pt_position_ids.shape}, ov -> {ov_position_ids.shape}"
+        f"patch_position_ids shapes: pt -> {pt_position_ids.shape}, ov -> {ov_position_ids.shape}"
     )
     assert np.all(np.array(pt_position_ids) == np.array(ov_position_ids))
