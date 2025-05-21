@@ -8,18 +8,21 @@ import numpy as np
 from transformers import AutoProcessor
 
 
-tensor_to_pil = torchvision.transforms.v2.ToPILImage()
+def tensor_to_pil(value: torch.Tensor):
+    # hwc -> chw
+    value = value.permute(2, 0, 1).contiguous()
+    return torchvision.transforms.v2.ToPILImage()(value)
 
 
 model_id = "microsoft/Phi-4-multimodal-instruct"
 
 images = [
-    torch.randint(256, size=(1, 3, 400, 400), dtype=torch.uint8),
-    torch.randint(256, size=(1, 3, 200, 800), dtype=torch.uint8),
-    torch.randint(256, size=(1, 3, 800, 200), dtype=torch.uint8),
-    torch.randint(256, size=(1, 3, 530, 720), dtype=torch.uint8),
-    torch.randint(256, size=(1, 3, 1245, 1334), dtype=torch.uint8),
-    torch.randint(256, size=(1, 3, 1200, 768), dtype=torch.uint8),
+    torch.randint(256, size=(1, 400, 400, 3), dtype=torch.uint8),
+    torch.randint(256, size=(1, 200, 800, 3), dtype=torch.uint8),
+    torch.randint(256, size=(1, 800, 200, 3), dtype=torch.uint8),
+    torch.randint(256, size=(1, 530, 720, 3), dtype=torch.uint8),
+    torch.randint(256, size=(1, 1245, 1334, 3), dtype=torch.uint8),
+    torch.randint(256, size=(1, 1200, 768, 3), dtype=torch.uint8),
 ]
 
 processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)

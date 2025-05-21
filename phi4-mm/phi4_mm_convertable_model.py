@@ -127,6 +127,9 @@ class Phi4MMConvertableModel(torch.nn.Module):
 
     def forward(self, image: torch.Tensor):
         image = image[0].to(torch.float32) / 255.0
+        # hwc -> chw
+        image = image.permute(2, 0, 1).contiguous()
+
         dynamic_hd = torch.tensor(36).int()
         dyhd_base_resolution = torch.tensor(448).int()
 

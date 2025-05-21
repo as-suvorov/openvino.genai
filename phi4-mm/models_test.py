@@ -11,21 +11,27 @@ from phi4_mm_original_model import OriginalModel
 import constants
 import time
 
-to_pil_processor = v2.Compose([v2.ToPILImage()])
+
+def to_pil_processor(value: torch.Tensor):
+    # hwc -> chw
+    value = value.permute(2, 0, 1).contiguous()
+    return v2.Compose([v2.ToPILImage()])(value)
+
+
 to_tensor_processor = v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)])
 
 
 @functools.lru_cache
 def get_test_images():
     images = [
-        torch.randint(256, size=(1, 3, 2700, 2500), dtype=torch.uint8),
-        torch.randint(256, size=(1, 3, 40000, 400), dtype=torch.uint8),
-        torch.randint(256, size=(1, 3, 400, 400), dtype=torch.uint8),
-        torch.randint(256, size=(1, 3, 200, 800), dtype=torch.uint8),
-        torch.randint(256, size=(1, 3, 800, 200), dtype=torch.uint8),
-        torch.randint(256, size=(1, 3, 530, 720), dtype=torch.uint8),
-        torch.randint(256, size=(1, 3, 1245, 1334), dtype=torch.uint8),
-        torch.randint(256, size=(1, 3, 1200, 768), dtype=torch.uint8),
+        # torch.randint(256, size=(1, 2700, 2500, 3), dtype=torch.uint8),
+        # torch.randint(256, size=(1, 40000, 400, 3), dtype=torch.uint8),
+        torch.randint(256, size=(1, 400, 400, 3), dtype=torch.uint8),
+        torch.randint(256, size=(1, 200, 800, 3), dtype=torch.uint8),
+        torch.randint(256, size=(1, 800, 200, 3), dtype=torch.uint8),
+        torch.randint(256, size=(1, 530, 720, 3), dtype=torch.uint8),
+        torch.randint(256, size=(1, 1245, 1334, 3), dtype=torch.uint8),
+        torch.randint(256, size=(1, 1200, 768, 3), dtype=torch.uint8),
     ]
     return [x for x in images]
 
@@ -36,7 +42,7 @@ def test_ov_model(
     original_model,
     images: list[torch.Tensor],
 ):
-    ov_model = ov.convert_model(pt_model, example_input=images[0])
+    ov_model = ov.convert_model(pt_model, example_input=images[1])
 
     ov_model_path = ".vscode/vlm/models/preprocess_image.xml"
     ov.save_model(ov_model, ov_model_path)
@@ -57,7 +63,7 @@ def test_ov_model(
         ov_num_img_tokens = ov_outputs["num_img_tokens"]
 
         pt_start = time.time()
-        pt_output = pt_model([image[0]])
+        pt_output = pt_model(image)
         pt_time = time.time() - pt_start
         pt_embeds = pt_output["input_image_embeds"]
         pt_image_sizes = np.array((pt_output["image_height"], pt_output["image_width"]))
@@ -71,17 +77,11 @@ def test_ov_model(
         original_image_sizes = original_outputs["image_sizes"]
         original_attention_mask = original_outputs["image_attention_mask"]
         original_num_img_tokens = original_outputs["num_img_tokens"]
-        original_patch_position_ids = original_outputs["patch_position_ids"]
 
         print(f"\n\n=============  image {i}  =============")
         print(
             f"ov time: {ov_time:.4f} pt time: {pt_time:.4f} original time: {original_time:.4f}"
         )
-
-        print(
-            f"patch position_ids shapes: original -> {original_patch_position_ids.shape}"
-        )
-        print(original_patch_position_ids)
 
         print(
             f"image_sizes shapes: original -> {original_image_sizes} pt -> {pt_image_sizes}, ov -> {ov_image_sizes}"
@@ -180,9 +180,10 @@ original_model = OriginalModel()
 original_output = original_model([pil_images[0]])
 
 
-# phi4_image_preprocessing_model = Phi4MMConvertableModel()
+phi4_image_preprocessing_model = Phi4MMConvertableModel()
+phi4_image_preprocessing_model(test_images[0])
 
-test_position_ids_model("position ids model pt vs ov", original_model, test_images)
+# test_position_ids_model("position ids model pt vs ov", original_model, test_images)
 
 # scripted_model = torch.jit.script(
 #     test_model, [pt_images, torch.tensor(utils.SORTED_TARGET_RATIOS)]
@@ -204,9 +205,9 @@ test_position_ids_model("position ids model pt vs ov", original_model, test_imag
 
 # print(result)
 
-# test_ov_model(
-#     "covertable pytorch vs ov",
-#     phi4_image_preprocessing_model,
-#     original_model,
-#     get_test_images(),
-# )
+test_ov_model(
+    "covertable pytorch vs ov",
+    phi4_image_preprocessing_model,
+    original_model,
+    get_test_images(),
+)
