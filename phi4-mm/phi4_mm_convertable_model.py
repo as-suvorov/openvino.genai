@@ -3,6 +3,53 @@ from torchvision.transforms import v2
 import torchvision.transforms.v2
 
 
+class PositionIdsModel(torch.nn.Module):
+    def forward(
+        self, input_image_embeds: torch.Tensor, image_attention_mask: torch.Tensor
+    ):
+        patch_size = 14
+        num_patches_per_side = 32
+        input_image_embeds = input_image_embeds.flatten(0, 1)
+        image_attention_mask = image_attention_mask.flatten(0, 1)
+        batch_size = input_image_embeds.shape[0]
+        max_im_h, max_im_w = input_image_embeds.size(2), input_image_embeds.size(3)
+        max_nb_patches_h, max_nb_patches_w = (
+            max_im_h // patch_size,
+            max_im_w // patch_size,
+        )
+        boundaries = torch.arange(
+            1 / num_patches_per_side, 1.0, 1 / num_patches_per_side
+        )
+        position_ids = torch.full(
+            size=(
+                batch_size,
+                max_nb_patches_h * max_nb_patches_w,
+            ),
+            fill_value=0,
+        )
+
+        for batch_idx, p_attn_mask in enumerate(image_attention_mask):
+            nb_patches_h = p_attn_mask[:, 0].sum()
+            nb_patches_w = p_attn_mask[0].sum()
+
+            fractional_coords_h = torch.arange(0, 1 - 1e-6, 1 / nb_patches_h)
+            fractional_coords_w = torch.arange(0, 1 - 1e-6, 1 / nb_patches_w)
+
+            bucket_coords_h = torch.bucketize(
+                fractional_coords_h, boundaries, right=True
+            )
+            bucket_coords_w = torch.bucketize(
+                fractional_coords_w, boundaries, right=True
+            )
+            pos_ids = (
+                bucket_coords_h[:, None] * num_patches_per_side + bucket_coords_w
+            ).flatten()
+
+            position_ids[batch_idx][p_attn_mask.view(-1).to(torch.bool)] = pos_ids
+
+        return position_ids
+
+
 class Phi4MMConvertableModel(torch.nn.Module):
 
     def dynamic_preprocess(
