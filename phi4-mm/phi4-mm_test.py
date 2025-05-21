@@ -1,17 +1,11 @@
 import torchvision.transforms.v2
 from transformers import AutoProcessor
 from phi4_mm_convertable_model import Phi4MMConvertableModel
-from optimum.intel import OVModelForVisualCausalLM
 import openvino as ov
 import torch
 import torchvision
 import numpy as np
-import soundfile
-from transformers import AutoProcessor, TextStreamer
-from io import BytesIO
-
-import requests
-from PIL import Image
+from transformers import AutoProcessor
 
 
 tensor_to_pil = torchvision.transforms.v2.ToPILImage()
@@ -29,23 +23,6 @@ images = [
 ]
 
 processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-ov_model = OVModelForVisualCausalLM.from_pretrained(".vscode/models/phi4-mm", trust_remote_code=True)
-# ov_model.save_pretrained(".vscode/models/phi4-mm")
-url = "https://github.com/openvinotoolkit/openvino_notebooks/assets/29454499/d5fbbd1a-d484-415c-88cb-9986625b7b11"
-image = Image.open(BytesIO(requests.get(url).content))
-inputs = ov_model.preprocess_inputs(text="What is unusual on this picture?", image=[tensor_to_pil(images[1][0])], processor=processor)
-# Image-Text
-
-print("Question:\nWhat is unusual on this picture?")
-print("Answer:")
-
-generate_ids = ov_model.generate(
-    **inputs,
-    max_new_tokens=100,
-    streamer=TextStreamer(processor.tokenizer, skip_prompt=True, skip_special_tokens=True),
-)
-
-
 phi4_image_preprocessing_model = Phi4MMConvertableModel()
 
 ov_model = ov.convert_model(
@@ -54,7 +31,6 @@ ov_model = ov.convert_model(
 )
 ov_compiled_model = ov.compile_model(ov_model, "CPU")
 # ov.save_model(ov_model, "preprocess_image.xml")
-
 
 for i, image in enumerate(images):
     preprocessed = processor.image_processor(tensor_to_pil(image[0]))
