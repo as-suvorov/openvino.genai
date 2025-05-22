@@ -396,7 +396,7 @@ class PreProcessModel(torch.nn.Module):
         hd_image_reshape = torch.cat([global_image] + [hd_image_reshape], dim=0)
         hd_masks_reshape = torch.cat(
             [global_attention_mask] + [attention_mask_reshape], dim=0
-        ).to(torch.bool)
+        ).to(torch.int64)
 
         # pad_to_max_num_crops, pad_mask_to_max_num_crops skipped as it's a batch feature
 
