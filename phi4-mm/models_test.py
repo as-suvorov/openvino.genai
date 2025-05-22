@@ -6,7 +6,11 @@ import functools
 from PIL import Image
 import requests
 from io import BytesIO
-from phi4_mm_convertable_model import Phi4MMConvertableModel, PositionIdsModel
+from phi4_mm_convertable_model import (
+    Phi4MMConvertableModel,
+    PositionIdsModel,
+    TargetSizesModel,
+)
 from phi4_mm_original_model import OriginalModel
 import constants
 import time
@@ -24,8 +28,8 @@ to_tensor_processor = v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=
 @functools.lru_cache
 def get_test_images():
     images = [
-        # torch.randint(256, size=(1, 2700, 2500, 3), dtype=torch.uint8),
-        # torch.randint(256, size=(1, 40000, 400, 3), dtype=torch.uint8),
+        torch.randint(256, size=(1, 2700, 2500, 3), dtype=torch.uint8),
+        torch.randint(256, size=(1, 40000, 400, 3), dtype=torch.uint8),
         torch.randint(256, size=(1, 400, 400, 3), dtype=torch.uint8),
         torch.randint(256, size=(1, 200, 800, 3), dtype=torch.uint8),
         torch.randint(256, size=(1, 800, 200, 3), dtype=torch.uint8),
@@ -177,13 +181,10 @@ test_images = get_test_images()
 
 pil_images = [to_pil_processor(x[0]) for x in test_images]
 original_model = OriginalModel()
-original_output = original_model([pil_images[0]])
 
+# phi4_image_preprocessing_model = Phi4MMConvertableModel()
+# phi4_image_preprocessing_model(test_images[0])
 
-phi4_image_preprocessing_model = Phi4MMConvertableModel()
-phi4_image_preprocessing_model(test_images[0])
-
-# test_position_ids_model("position ids model pt vs ov", original_model, test_images)
 
 # scripted_model = torch.jit.script(
 #     test_model, [pt_images, torch.tensor(utils.SORTED_TARGET_RATIOS)]
@@ -199,15 +200,55 @@ phi4_image_preprocessing_model(test_images[0])
 
 # ov_model = ov.compile_model(ov_model, "CPU")
 
-# from openvino_devtools import ov2py
 
-# result = ov2py.ov2py(ov.Core().read_model(ov_model_path))
+# test_position_ids_model("position ids model pt vs ov", original_model, test_images)
 
-# print(result)
+# test_ov_model(
+#     "covertable pytorch vs ov",
+#     phi4_image_preprocessing_model,
+#     original_model,
+#     get_test_images(),
+# )
 
-test_ov_model(
-    "covertable pytorch vs ov",
-    phi4_image_preprocessing_model,
-    original_model,
-    get_test_images(),
-)
+
+def test_target_sizes_model():
+    hd_model = TargetSizesModel()
+    hd_model(test_images[1])
+
+    scripted_model = torch.jit.script(hd_model, [test_images[0]])
+
+    ov_hd_model = ov.convert_model(scripted_model, example_input=test_images[0])
+    ov_hd_model = ov.compile_model(ov_hd_model, "CPU")
+
+    print(f"====== target sizes model ====")
+
+    for i, image in enumerate(test_images):
+        pt_start = time.perf_counter()
+        pt_output = hd_model(image)
+        pt_time = time.perf_counter() - pt_start
+        pt_new_size = pt_output["new_size"]
+        pt_padding_width = pt_output["padding_width"]
+        pt_padding_height = pt_output["padding_height"]
+        pt_attention_mask = pt_output["attention_mask"]
+
+        ov_start = time.perf_counter()
+        ov_output = ov_hd_model(image)
+        ov_time = time.perf_counter() - ov_start
+        ov_new_size = ov_output["new_size"]
+        ov_padding_width = ov_output["padding_width"]
+        ov_padding_height = ov_output["padding_height"]
+        ov_attention_mask = ov_output["attention_mask"]
+
+        print(f"\n\n=============  image {i}  =============")
+        print(f"pt time: {pt_time:.4f} ov time: {ov_time:.4f}")
+        print(f"new_size pt-> {pt_new_size}, ov -> {ov_new_size}")
+        print(f"padding_width pt-> {pt_padding_width}, ov -> {ov_padding_width}")
+        print(f"padding_height pt-> {pt_padding_height}, ov -> {ov_padding_height}")
+        print(
+            f"attention_mask shapes: pt -> {pt_attention_mask.shape}, ov -> {ov_attention_mask.shape}"
+        )
+
+        assert np.all(np.array(pt_new_size) == np.array(ov_new_size))
+        assert np.all(np.array(pt_padding_width) == np.array(ov_padding_width))
+        assert np.all(np.array(pt_padding_height) == np.array(ov_padding_height))
+        assert np.all(np.array(pt_attention_mask) == np.array(ov_attention_mask))

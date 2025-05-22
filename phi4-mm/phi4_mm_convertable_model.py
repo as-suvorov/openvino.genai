@@ -1,6 +1,7 @@
 import torch
 from torchvision.transforms import v2
 import torchvision.transforms.v2
+import torchvision
 
 
 class PositionIdsModel(torch.nn.Module):
@@ -52,6 +53,247 @@ class PositionIdsModel(torch.nn.Module):
         }
 
 
+class TargetSizesModel(torch.nn.Module):
+    def find_closest_aspect_ratio(
+        self,
+        width: torch.Tensor,
+        height: torch.Tensor,
+        image_size: torch.Tensor,
+    ):
+        aspect_ratio = width / height
+        target_ratios = torch.tensor(
+            [
+                (1, 1),
+                (1, 2),
+                (2, 1),
+                (3, 1),
+                (1, 3),
+                (2, 2),
+                (4, 1),
+                (1, 4),
+                (5, 1),
+                (1, 5),
+                (6, 1),
+                (3, 2),
+                (2, 3),
+                (1, 6),
+                (7, 1),
+                (1, 7),
+                (4, 2),
+                (2, 4),
+                (1, 8),
+                (8, 1),
+                (9, 1),
+                (3, 3),
+                (1, 9),
+                (1, 10),
+                (5, 2),
+                (10, 1),
+                (2, 5),
+                (1, 11),
+                (11, 1),
+                (6, 2),
+                (1, 12),
+                (2, 6),
+                (12, 1),
+                (3, 4),
+                (4, 3),
+                (13, 1),
+                (1, 13),
+                (14, 1),
+                (1, 14),
+                (7, 2),
+                (2, 7),
+                (1, 15),
+                (5, 3),
+                (3, 5),
+                (15, 1),
+                (8, 2),
+                (16, 1),
+                (4, 4),
+                (1, 16),
+                (2, 8),
+                (1, 17),
+                (17, 1),
+                (18, 1),
+                (3, 6),
+                (9, 2),
+                (1, 18),
+                (6, 3),
+                (2, 9),
+                (1, 19),
+                (19, 1),
+                (20, 1),
+                (5, 4),
+                (2, 10),
+                (1, 20),
+                (4, 5),
+                (10, 2),
+                (7, 3),
+                (1, 21),
+                (3, 7),
+                (21, 1),
+                (2, 11),
+                (11, 2),
+                (22, 1),
+                (1, 22),
+                (1, 23),
+                (23, 1),
+                (1, 24),
+                (24, 1),
+                (6, 4),
+                (3, 8),
+                (4, 6),
+                (2, 12),
+                (8, 3),
+                (12, 2),
+                (5, 5),
+                (1, 25),
+                (25, 1),
+                (1, 26),
+                (2, 13),
+                (13, 2),
+                (26, 1),
+                (9, 3),
+                (27, 1),
+                (3, 9),
+                (1, 27),
+                (1, 28),
+                (7, 4),
+                (14, 2),
+                (2, 14),
+                (4, 7),
+                (28, 1),
+                (29, 1),
+                (1, 29),
+                (3, 10),
+                (15, 2),
+                (1, 30),
+                (2, 15),
+                (10, 3),
+                (5, 6),
+                (30, 1),
+                (6, 5),
+                (1, 31),
+                (31, 1),
+                (8, 4),
+                (1, 32),
+                (4, 8),
+                (32, 1),
+                (16, 2),
+                (2, 16),
+                (1, 33),
+                (33, 1),
+                (3, 11),
+                (11, 3),
+                (34, 1),
+                (17, 2),
+                (2, 17),
+                (1, 34),
+                (35, 1),
+                (1, 35),
+                (7, 5),
+                (5, 7),
+                (4, 9),
+                (6, 6),
+                (3, 12),
+                (18, 2),
+                (12, 3),
+                (36, 1),
+                (1, 36),
+                (9, 4),
+                (2, 18),
+            ],
+            dtype=torch.int64,
+        )
+
+        best_ratio_diff = torch.tensor(torch.inf)
+        best_ratio = torch.tensor([1, 1], dtype=torch.int64)
+        area = width * height
+
+        target_aspect_ratio = aspect_ratio
+
+        for ratio in target_ratios:
+            target_aspect_ratio = ratio[0] / ratio[1].to(torch.float32)
+            ratio_diff = torch.abs(aspect_ratio - target_aspect_ratio).to(torch.float32)
+            if torch.lt(ratio_diff, best_ratio_diff):
+                best_ratio_diff = ratio_diff
+                best_ratio = ratio
+            elif torch.eq(ratio_diff, best_ratio_diff):
+                if area > 0.5 * image_size * image_size * ratio[0] * ratio[1]:
+                    best_ratio = ratio
+        return best_ratio
+
+    def forward(self, image: torch.Tensor):
+        # nhwc format
+        dynamic_hd = torch.tensor(36).int()
+        dyhd_base_resolution = torch.tensor(448).int()
+
+        mask_resolution = dyhd_base_resolution // 14
+
+        _, orig_height, orig_width, _ = image.shape
+        orig_height = torch.tensor(orig_height, dtype=torch.int64)
+        orig_width = torch.tensor(orig_width, dtype=torch.int64)
+
+        w_crop_num = torch.ceil(orig_width / dyhd_base_resolution.to(torch.float)).to(
+            torch.int64
+        )
+
+        h_crop_num = torch.ceil(orig_height / dyhd_base_resolution.to(torch.float)).to(
+            torch.int64
+        )
+
+        target_aspect_ratio = self.find_closest_aspect_ratio(
+            orig_width,
+            orig_height,
+            dyhd_base_resolution,
+        )
+
+        if torch.gt(w_crop_num * h_crop_num, dynamic_hd):
+            # find the closest aspect ratio to the target
+            target_width = dyhd_base_resolution * target_aspect_ratio[0]
+            target_height = dyhd_base_resolution * target_aspect_ratio[1]
+        else:
+            target_width = dyhd_base_resolution * w_crop_num
+            target_height = dyhd_base_resolution * h_crop_num
+            target_aspect_ratio = torch.tensor([w_crop_num, h_crop_num])
+
+        ratio_width = target_width / orig_width
+        ratio_height = target_height / orig_height
+
+        if ratio_width < ratio_height:
+            new_size = torch.tensor(
+                [target_width, (orig_height * ratio_width).to(torch.int64)]
+            )
+            padding_width = 0
+            padding_height = int(target_height - (orig_height * ratio_width))
+        else:
+            new_size = torch.tensor(
+                [(orig_width * ratio_height).to(torch.int64), target_height]
+            )
+            padding_width = int(target_width - (orig_width * ratio_height))
+            padding_height = 0
+
+        attention_mask = torch.ones(
+            (
+                int(mask_resolution * target_aspect_ratio[1]),
+                int(mask_resolution * target_aspect_ratio[0]),
+            )
+        )
+
+        if padding_width >= 14:
+            attention_mask[:, -(padding_width // 14) :] = 0
+        if padding_height >= 14:
+            attention_mask[-(padding_height // 14) :, :] = 0
+
+        return {
+            "new_size": new_size,
+            "padding_width": torch.tensor(padding_width),
+            "padding_height": torch.tensor(padding_height),
+            "attention_mask": attention_mask,
+        }
+
+
 class Phi4MMConvertableModel(torch.nn.Module):
 
     def dynamic_preprocess(
@@ -69,8 +311,6 @@ class Phi4MMConvertableModel(torch.nn.Module):
         w_crop_num = torch.ceil(orig_width / image_size.to(torch.float))
 
         h_crop_num = torch.ceil(orig_height / image_size.to(torch.float))
-
-        image = v2.functional.normalize(image, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
 
         # todo:
         # w_crop_num * h_crop_num > max_num condition is skipped
@@ -142,6 +382,8 @@ class Phi4MMConvertableModel(torch.nn.Module):
             image_size=dyhd_base_resolution,
             mask_size=mask_resolution,
         )
+
+        hd_image = v2.functional.normalize(hd_image, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
 
         global_image = torch.nn.functional.interpolate(
             hd_image.unsqueeze(0).float(),
