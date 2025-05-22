@@ -33,7 +33,7 @@ ov_model = ov.convert_model(
     example_input=images[0],
 )
 ov_compiled_model = ov.compile_model(ov_model, "CPU")
-# ov.save_model(ov_model, "preprocess_image.xml")
+# ov.save_model(ov_model, "preprocess_image.xml", compress_to_fp16=False)
 
 for i, image in enumerate(images):
     preprocessed = processor.image_processor(tensor_to_pil(image[0]))
@@ -63,3 +63,4 @@ for i, image in enumerate(images):
     assert np.all(np.array(original_image_sizes == ov_image_sizes))
     assert np.all(np.array(original_attention_mask == ov_attention_mask))
     assert np.all(np.array(original_num_img_tokens == ov_num_img_tokens))
+    assert torch.max(original_embeds - ov_embeds) < 0.01
