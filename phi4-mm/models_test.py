@@ -10,6 +10,7 @@ from phi4_mm_convertable_model import (
     Phi4MMConvertableModel,
     PositionIdsModel,
     TargetSizesModel,
+    PreProcessModel,
 )
 from phi4_mm_original_model import OriginalModel
 import constants
@@ -212,19 +213,21 @@ original_model = OriginalModel()
 
 
 def test_target_sizes_model():
-    hd_model = TargetSizesModel()
-    hd_model(test_images[1])
+    target_sizes_model = TargetSizesModel()
+    target_sizes_model(test_images[1])
 
-    scripted_model = torch.jit.script(hd_model, [test_images[0]])
+    scripted_model = torch.jit.script(target_sizes_model, [test_images[0]])
 
-    ov_hd_model = ov.convert_model(scripted_model, example_input=test_images[0])
-    ov_hd_model = ov.compile_model(ov_hd_model, "CPU")
+    ov_target_sizes_model = ov.convert_model(
+        scripted_model, example_input=test_images[0]
+    )
+    ov_target_sizes_model = ov.compile_model(ov_target_sizes_model, "CPU")
 
     print(f"====== target sizes model ====")
 
     for i, image in enumerate(test_images):
         pt_start = time.perf_counter()
-        pt_output = hd_model(image)
+        pt_output = target_sizes_model(image)
         pt_time = time.perf_counter() - pt_start
         pt_new_size = pt_output["new_size"]
         pt_padding_width = pt_output["padding_width"]
@@ -232,7 +235,7 @@ def test_target_sizes_model():
         pt_attention_mask = pt_output["attention_mask"]
 
         ov_start = time.perf_counter()
-        ov_output = ov_hd_model(image)
+        ov_output = ov_target_sizes_model(image)
         ov_time = time.perf_counter() - ov_start
         ov_new_size = ov_output["new_size"]
         ov_padding_width = ov_output["padding_width"]
@@ -252,3 +255,39 @@ def test_target_sizes_model():
         assert np.all(np.array(pt_padding_width) == np.array(ov_padding_width))
         assert np.all(np.array(pt_padding_height) == np.array(ov_padding_height))
         assert np.all(np.array(pt_attention_mask) == np.array(ov_attention_mask))
+
+
+# test_target_sizes_model()
+
+
+def test_preprocess_model():
+    target_sizes_model = TargetSizesModel()
+    scripted_model = torch.jit.script(target_sizes_model, [test_images[0]])
+
+    ov_target_sizes_model = ov.convert_model(
+        scripted_model, example_input=test_images[0]
+    )
+    ov_target_sizes_model = ov.compile_model(ov_target_sizes_model, "CPU")
+
+    ov_output = ov_target_sizes_model(test_images[0])
+    ov_new_size = ov_output["new_size"]
+    ov_padding_width = ov_output["padding_width"]
+    ov_padding_height = ov_output["padding_height"]
+    ov_attention_mask = ov_output["attention_mask"]
+
+    example_input = (
+        test_images[0],
+        torch.tensor(ov_attention_mask),
+        torch.tensor(ov_new_size),
+        torch.tensor(ov_padding_width),
+        torch.tensor(ov_padding_height),
+    )
+
+    preprocess_model = PreProcessModel()
+    preprocess_model(*example_input)
+
+    ov_preprocess_model = ov.convert_model(
+        preprocess_model, example_input=example_input
+    )
+    ov_preprocess_model = ov.compile_model(ov_preprocess_model, "CPU")
+    ov_preprocess_model(example_input)

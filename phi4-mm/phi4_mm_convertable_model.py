@@ -266,12 +266,12 @@ class TargetSizesModel(torch.nn.Module):
                 [target_width, (orig_height * ratio_width).to(torch.int64)]
             )
             padding_width = 0
-            padding_height = int(target_height - (orig_height * ratio_width))
+            padding_height = int(target_height - int(orig_height * ratio_width))
         else:
             new_size = torch.tensor(
                 [(orig_width * ratio_height).to(torch.int64), target_height]
             )
-            padding_width = int(target_width - (orig_width * ratio_height))
+            padding_width = int(target_width - int(orig_width * ratio_height))
             padding_height = 0
 
         attention_mask = torch.ones(
@@ -291,6 +291,121 @@ class TargetSizesModel(torch.nn.Module):
             "padding_width": torch.tensor(padding_width),
             "padding_height": torch.tensor(padding_height),
             "attention_mask": attention_mask,
+        }
+
+
+class PreProcessModel(torch.nn.Module):
+    def forward(
+        self,
+        image: torch.Tensor,
+        attention_mask: torch.Tensor,
+        new_size: torch.Tensor,
+        padding_width: torch.Tensor,
+        padding_height: torch.Tensor,
+    ):
+        # nhwc format
+        image = image[0].to(torch.float32) / 255.0
+        # hwc -> chw
+        image = image.permute(2, 0, 1).contiguous()
+
+        dyhd_base_resolution = torch.tensor(448).int()
+
+        base_resolution = dyhd_base_resolution
+        mask_resolution = base_resolution // 14
+        new_height_size = new_size[1]
+        new_width_size = new_size[0]
+        resize = torch.nn.Sequential(
+            torchvision.transforms.v2.Resize([new_height_size, new_width_size]),  # type: ignore
+        )
+
+        hd_image = resize(image)
+
+        # pad
+        image_pad_width_tensor = torch.ones([3, new_height_size, padding_width])  # type: ignore
+        image_pad_height_tensor = torch.ones([3, padding_height, padding_width + new_width_size])  # type: ignore
+
+        hd_image = torch.concat([hd_image, image_pad_width_tensor], dim=2)
+        hd_image = torch.concat([hd_image, image_pad_height_tensor], dim=1)
+
+        hd_image = v2.functional.normalize(hd_image, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+
+        global_image = torch.nn.functional.interpolate(
+            hd_image.unsqueeze(0).float(),
+            size=(base_resolution, base_resolution),
+            mode="bicubic",
+        ).to(hd_image.dtype)
+
+        _, IMAGE_H, IMAGE_W = hd_image.shape
+
+        mask_shape = attention_mask.shape
+
+        global_attention_mask = torch.ones((1, mask_resolution, mask_resolution))  # type: ignore
+        hd_image_reshape = (
+            hd_image.reshape(
+                1,
+                3,
+                IMAGE_H // base_resolution,
+                base_resolution,
+                IMAGE_W // base_resolution,
+                base_resolution,
+            )
+            .permute(0, 2, 4, 1, 3, 5)
+            .reshape(-1, 3, base_resolution, base_resolution)
+            .contiguous()
+        )
+
+        attention_mask_reshape = (
+            attention_mask.reshape(
+                1,
+                mask_shape[0] // mask_resolution,
+                mask_resolution,
+                mask_shape[1] // mask_resolution,
+                mask_resolution,
+            )
+            .permute(0, 1, 3, 2, 4)
+            .reshape(-1, mask_resolution, mask_resolution)
+            .contiguous()
+        )
+
+        downsample_attention_mask = (
+            attention_mask_reshape[:, 0::2, 0::2]
+            .reshape(
+                1,
+                mask_shape[0] // mask_resolution,
+                mask_shape[1] // mask_resolution,
+                mask_resolution // 2 + mask_resolution % 2,
+                mask_resolution // 2 + mask_resolution % 2,
+            )
+            .permute(0, 1, 3, 2, 4)
+        )
+
+        dam_shape = downsample_attention_mask.shape
+        downsample_attention_mask = downsample_attention_mask.reshape(
+            dam_shape[1] * dam_shape[2], dam_shape[3] * dam_shape[4]
+        )
+
+        num_img_tokens = torch.tensor(
+            256
+            + 1
+            + downsample_attention_mask.sum()
+            + downsample_attention_mask[:, 0].sum()
+            + 16,
+            dtype=torch.int64,
+        )
+
+        hd_image_reshape = torch.cat([global_image] + [hd_image_reshape], dim=0)
+        hd_masks_reshape = torch.cat(
+            [global_attention_mask] + [attention_mask_reshape], dim=0
+        ).to(torch.bool)
+
+        # pad_to_max_num_crops, pad_mask_to_max_num_crops skipped as it's a batch feature
+
+        return {
+            "input_image_embeds": hd_image_reshape.unsqueeze(0),
+            "image_height": torch.tensor(IMAGE_H, dtype=torch.int64),
+            "image_width": torch.tensor(IMAGE_W, dtype=torch.int64),
+            "image_attention_mask": hd_masks_reshape.unsqueeze(0),
+            "num_img_tokens": num_img_tokens.unsqueeze(0),
         }
 
 
