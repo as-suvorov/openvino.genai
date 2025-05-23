@@ -29,24 +29,26 @@ class PositionIdsModel(torch.nn.Module):
             fill_value=0,
         )
 
-        for batch_idx, p_attn_mask in enumerate(image_attention_mask):
-            nb_patches_h = p_attn_mask[:, 0].sum()
-            nb_patches_w = p_attn_mask[0].sum()
+        B, H, W = image_attention_mask.shape
 
-            fractional_coords_h = torch.arange(0, 1 - 1e-6, 1 / nb_patches_h)
-            fractional_coords_w = torch.arange(0, 1 - 1e-6, 1 / nb_patches_w)
+        # Compute number of patches (assumes same across batch)
+        nb_patches_h = image_attention_mask[:, :, 0].sum(dim=1)[0].item()
+        nb_patches_w = image_attention_mask[:, 0, :].sum(dim=1)[0].item()
 
-            bucket_coords_h = torch.bucketize(
-                fractional_coords_h, boundaries, right=True
-            )
-            bucket_coords_w = torch.bucketize(
-                fractional_coords_w, boundaries, right=True
-            )
-            pos_ids = (
-                bucket_coords_h[:, None] * num_patches_per_side + bucket_coords_w
-            ).flatten()
+        # Generate fractional coordinates
+        fractional_coords_h = torch.arange(0, 1 - 1e-6, 1 / nb_patches_h)
+        fractional_coords_w = torch.arange(0, 1 - 1e-6, 1 / nb_patches_w)
 
-            position_ids[batch_idx][p_attn_mask.view(-1).to(torch.bool)] = pos_ids
+        # Bucketize
+        bucket_coords_h = torch.bucketize(fractional_coords_h, boundaries, right=True)
+        bucket_coords_w = torch.bucketize(fractional_coords_w, boundaries, right=True)
+
+        # Compute position IDs
+        pos_ids = (bucket_coords_h[:, None] * num_patches_per_side + bucket_coords_w).flatten()
+
+        # Broadcast pos_ids to match the batch
+        position_ids = torch.zeros_like(image_attention_mask.view(B, -1), dtype=torch.long)
+        position_ids = image_attention_mask.view(B, -1) * pos_ids.repeat(B).reshape(B, -1)
 
         return {
             "patch_position_ids": position_ids,
