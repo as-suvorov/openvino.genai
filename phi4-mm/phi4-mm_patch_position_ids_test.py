@@ -39,13 +39,14 @@ processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
 
 example_inputs = get_position_ids_example_inputs(processor)
 pt_model = PositionIdsModel()
-
-scripted_model = torch.jit.script(pt_model, example_inputs=example_inputs)
+pt_model(*(example_inputs[0]))
 
 ov_model = ov.convert_model(
-    scripted_model,
+    pt_model,
     example_input=example_inputs[0],
 )
+print(ov_model)
+# ov.save_model(ov_model, "position_ids_ref/a.xml", compress_to_fp16=False)
 ov_model = ov.compile_model(ov_model, "CPU")
 
 for i, image in enumerate(images):
@@ -62,8 +63,8 @@ for i, image in enumerate(images):
     ov_start = time.perf_counter()
     ov_position_ids = ov_model(
         {
-            "input_image_embeds.1": input_image_embeds,
-            "image_attention_mask.1": image_attention_mask,
+            "input_image_embeds": input_image_embeds,
+            "image_attention_mask": image_attention_mask,
         }
     )["patch_position_ids"]
     ov_time = time.perf_counter() - ov_start
