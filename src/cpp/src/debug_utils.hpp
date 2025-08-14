@@ -35,7 +35,7 @@ void print_tensor(ov::Tensor tensor) {
     for (size_t batch = 0; batch < batch_size; ++batch) {
         std::cout << "  [ ";
         const size_t batch_offset = batch * seq_length;
-        for (size_t j = 0; j < seq_length; ++j) {
+        for (size_t j = 0; j < std::min(seq_length, size_t(10)); ++j) {
             std::cout << data[batch_offset + j] << " ";
         }
         std::cout << "]\n";

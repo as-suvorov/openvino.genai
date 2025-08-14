@@ -80,6 +80,12 @@ public:
         }
         m_values[old_back] = value;
     }
+
+    bool all_idle() {
+        std::unique_lock<std::mutex> lk(m_queue_mutex);
+        const int back_idx = m_back_idx.load();
+        return m_values[back_idx] >= 0;
+    }
 };
 
 template <typename T>

@@ -6,6 +6,8 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 
+#include "async_infer_request_queue.hpp"
+#include "cmath"
 #include "json_utils.hpp"
 #include "logger.hpp"
 #include "openvino/core/except.hpp"
@@ -171,13 +173,15 @@ public:
                               const Config& config,
                               const ov::AnyMap& properties = {})
         : m_config{config},
-          m_tokenizer{models_path},
+          m_tokenizer{models_path, properties},
           m_model_config{models_path} {
         m_config.validate();
 
         ov::Core core = utils::singleton_core();
 
         auto model = core.read_model(models_path / "openvino_model.xml", {}, properties);
+
+        m_model_has_token_type_ids_input = has_token_type_ids_input(model->inputs());
 
         const bool should_reshape = m_config.batch_size.has_value() || m_config.max_length.has_value();
         if (should_reshape) {
@@ -203,7 +207,10 @@ public:
         ov::CompiledModel compiled_model = core.compile_model(model, device, properties);
 
         utils::print_compiled_model_properties(compiled_model, "text embedding model");
-        m_request = compiled_model.create_infer_request();
+
+        m_async_infer_queue =
+            std::make_unique<AsyncInferRequestQueue>(compiled_model,
+                                                     compiled_model.get_property(ov::optimal_number_of_infer_requests));
     };
 
     EmbeddingResults embed_documents(const std::vector<std::string>& texts) {
@@ -212,8 +219,12 @@ public:
     };
 
     void start_embed_documents_async(const std::vector<std::string>& texts) {
+        OPENVINO_ASSERT(m_worker_thread == nullptr,
+                        "Pipeline is already running. Please wait for the previous embedding to finish.");
         auto formatted_texts = format_texts(texts);
-        start_embed_async(formatted_texts);
+        m_async_infer_queue->reset_all_idle();
+        m_worker_thread =
+            std::make_unique<std::thread>(&TextEmbeddingPipelineImpl::embed_worker, this, formatted_texts);
     };
 
     EmbeddingResults wait_embed_documents() {
@@ -226,8 +237,12 @@ public:
     };
 
     void start_embed_query_async(const std::string& text) {
+        OPENVINO_ASSERT(m_worker_thread == nullptr,
+                        "Pipeline is already running. Please wait for the previous embedding to finish.");
         std::vector<std::string> formatted_query{format_query(text)};
-        start_embed_async(formatted_query);
+        m_async_infer_queue->reset_all_idle();
+        m_worker_thread =
+            std::make_unique<std::thread>(&TextEmbeddingPipelineImpl::embed_worker, this, formatted_query);
     };
 
     EmbeddingResult wait_embed_query() {
@@ -244,16 +259,22 @@ public:
 
 private:
     Tokenizer m_tokenizer;
-    InferRequest m_request;
     Config m_config;
     ModelConfig m_model_config;
     AnyMap m_tokenization_params;
+    std::atomic<bool> m_model_has_fixed_batch = false;
+    std::atomic<bool> m_model_has_token_type_ids_input = false;
+    std::unique_ptr<AsyncInferRequestQueue> m_async_infer_queue;
+    std::unique_ptr<std::thread> m_worker_thread = nullptr;
+    EmbeddingResults m_embedding_results;
+    std::mutex m_embedding_results_mutex;
 
     void reshape_model(std::shared_ptr<Model>& model) {
         ov::PartialShape target_shape{ov::Dimension::dynamic(), ov::Dimension::dynamic()};
 
         if (m_config.batch_size.has_value()) {
             target_shape[0] = ov::Dimension(*m_config.batch_size);
+            m_model_has_fixed_batch = true;
         }
 
         if (m_config.max_length.has_value()) {
@@ -277,46 +298,54 @@ private:
         input_name_to_shape["input_ids"] = target_shape;
         input_name_to_shape["attention_mask"] = target_shape;
 
-        if (has_token_type_ids_input(model->inputs())) {
+        if (m_model_has_token_type_ids_input) {
             input_name_to_shape["token_type_ids"] = target_shape;
         }
 
         model->reshape(input_name_to_shape);
     }
 
-    void start_embed_async(std::vector<std::string>& texts) {
-        if (m_config.batch_size.has_value()) {
-            // if batch_size is set, model shape is fixed
-            // provide user friendly error message if number of texts is not equal to batch_size
-            OPENVINO_ASSERT(texts.size() == *m_config.batch_size,
-                            "Number of texts passed to pipeline should be equal to batch_size(",
-                            *m_config.batch_size,
-                            ")");
+    void embed_worker(const std::vector<std::string>& texts) {
+        m_embedding_results = std::vector<std::vector<float>>(texts.size());
+        size_t batch_size = m_config.batch_size.value_or(4);
+
+        const size_t num_batches = std::ceil(static_cast<float>(texts.size()) / batch_size);
+
+        for (size_t batch = 0; batch < num_batches; ++batch) {
+            size_t start = batch * batch_size;
+            size_t end = std::min(start + batch_size, texts.size());
+            std::vector<std::string> batch_texts(texts.begin() + start, texts.begin() + end);
+
+            if (m_model_has_fixed_batch && batch_texts.size() < batch_size) {
+                batch_texts.resize(batch_size);
+            }
+
+            const auto encoded = m_tokenizer.encode(batch_texts, m_tokenization_params);
+
+            auto request = m_async_infer_queue->get();
+
+            fill_inputs(encoded, request);
+
+            request->set_callback([this, request, start, end]() {
+                const Tensor last_hidden_state = request->get_tensor("last_hidden_state");
+                fill_embedding_results(last_hidden_state, {start, end});
+            });
+
+            request->start_async();
         }
-
-        const auto encoded = m_tokenizer.encode(texts, m_tokenization_params);
-
-        m_request.set_tensor("input_ids", encoded.input_ids);
-        m_request.set_tensor("attention_mask", encoded.attention_mask);
-
-        // fill token_type_ids
-        // todo: pass token_type_ids from tokenizer
-        if (has_token_type_ids_input(m_request.get_compiled_model().inputs())) {
-            ov::Tensor token_type_ids{ov::element::i64, encoded.input_ids.get_shape()};
-            std::fill_n(token_type_ids.data<int64_t>(), encoded.input_ids.get_size(), 0);
-            m_request.set_tensor("token_type_ids", token_type_ids);
-        }
-
-        m_request.start_async();
     };
 
     EmbeddingResults wait_embed() {
-        m_request.wait();
+        if (m_worker_thread && m_worker_thread->joinable()) {
+            m_worker_thread->join();
+        }
 
-        // [batch_size, hidden_size]
-        const Tensor last_hidden_state = m_request.get_tensor("last_hidden_state");
+        m_async_infer_queue->wait_all_idle();
+        m_worker_thread = nullptr;
 
-        return to_embedding_result(last_hidden_state);
+        const auto results = std::move(m_embedding_results);
+        m_embedding_results = {};
+        return results;
     };
 
     std::vector<std::string> format_texts(const std::vector<std::string>& texts) {
@@ -341,23 +370,37 @@ private:
         return *m_config.query_instruction + text;
     }
 
-    EmbeddingResults to_embedding_result(const Tensor& last_hidden_state) {
+    void fill_embedding_results(const Tensor& last_hidden_state, const std::pair<size_t, size_t>& batch_range) {
         const float* last_hidden_state_data = last_hidden_state.data<float>();
 
-        std::vector<std::vector<float>> result;
         const auto shape = last_hidden_state.get_shape();
 
-        const size_t batch_size = shape[0];
+        const size_t batch_size = batch_range.second - batch_range.first;
         const size_t hidden_size = shape[1];
 
-        for (size_t batch = 0; batch < batch_size; batch++) {
-            const auto batch_offset = batch * hidden_size;
-            const float* batch_data = last_hidden_state_data + batch_offset;
-            const std::vector<float> batch_result(batch_data, batch_data + hidden_size);
-            result.push_back(batch_result);
+        {
+            std::lock_guard<std::mutex> lock(m_embedding_results_mutex);
+            for (size_t batch_id = 0; batch_id < batch_size; batch_id++) {
+                const auto batch_offset = batch_id * hidden_size;
+                const float* batch_data = last_hidden_state_data + batch_offset;
+                const std::vector<float> batch_result(batch_data, batch_data + hidden_size);
+                auto& embedding_results = std::get<std::vector<std::vector<float>>>(m_embedding_results);
+                embedding_results[batch_id + batch_range.first] = batch_result;
+            }
         }
+    }
 
-        return result;
+    void fill_inputs(const TokenizedInputs& encoded, std::shared_ptr<InferRequestAsyncWrapper> request) {
+        request->set_tensor("input_ids", encoded.input_ids);
+        request->set_tensor("attention_mask", encoded.attention_mask);
+
+        // fill token_type_ids
+        // todo: pass token_type_ids from tokenizer
+        if (m_model_has_token_type_ids_input) {
+            ov::Tensor token_type_ids{ov::element::i64, encoded.input_ids.get_shape()};
+            std::fill_n(token_type_ids.data<int64_t>(), encoded.input_ids.get_size(), 0);
+            request->set_tensor("token_type_ids", token_type_ids);
+        }
     }
 };
 
