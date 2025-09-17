@@ -105,6 +105,84 @@ inline bool is_paged_attention_available() {
 #endif
 }
 
+std::string map_to_string(const ov::AnyMap& properties) {
+    std::stringstream ss;
+    for (const auto& [key, value] : properties) {
+        std::string value_str;
+        if (value.is<int>()) {
+            value_str = std::to_string(value.as<int>());
+        } else if (value.is<int64_t>()) {
+            value_str = std::to_string(value.as<int64_t>());
+        } else if (value.is<float>()) {
+            value_str = std::to_string(value.as<float>());
+        } else if (value.is<bool>()) {
+            value_str = value.as<bool>() ? "true" : "false";
+        } else if (value.is<std::string>()) {
+            value_str = value.as<std::string>();
+        } else {
+            // Handle other types or skip
+            continue;
+        }
+        ss << key << "=" << value_str << ";\n";
+    }
+    return ss.str();
+}
+
+ov::AnyMap string_to_map(const std::string& str) {
+    ov::AnyMap properties;
+    std::stringstream ss(str);
+    std::string item;
+    while (std::getline(ss, item, ';')) {
+        auto pos = item.find('=');
+        if (pos != std::string::npos) {
+            std::string key = item.substr(0, pos);
+            std::string value = item.substr(pos + 1);
+
+            // properties[key] = value; // Store as string; further parsing can be done as needed
+            // parse value to int, float, bool or string
+            if (value == "true") {
+                properties[key] = true;
+            } else if (value == "false") {
+                properties[key] = false;
+            } else {
+                try {
+                    size_t idx;
+                    int int_value = std::stoi(value, &idx);
+                    if (idx == value.size()) {
+                        properties[key] = int_value;
+                        continue;
+                    }
+                } catch (...) {
+                    // Not an int
+                }
+                try {
+                    size_t idx;
+                    int64_t int64_value = std::stoll(value, &idx);
+                    if (idx == value.size()) {
+                        properties[key] = int64_value;
+                        continue;
+                    }
+                } catch (...) {
+                    // Not an int64
+                }
+                try {
+                    size_t idx;
+                    float float_value = std::stof(value, &idx);
+                    if (idx == value.size()) {
+                        properties[key] = float_value;
+                        continue;
+                    }
+                } catch (...) {
+                    // Not a float
+                }
+                properties[key] = value; // Fallback to string
+            }
+        }
+    }
+    return properties;
+}
+
+
 } // anonymous
 
 namespace ov {
@@ -758,7 +836,25 @@ ov::CompiledModel import_model(const std::filesystem::path& blob_path,
                                const std::string& device,
                                const ov::AnyMap& properties) {
     OPENVINO_ASSERT(!blob_path.empty(), "blob path is empty");
-    ov::Tensor blob_tensor = ov::read_tensor_data(blob_path);
+
+    std::ifstream in(blob_path, std::ios::in | std::ios::binary);
+
+    OPENVINO_ASSERT(in.is_open(), "Cannot open file to read: " + blob_path.string());
+
+    // Step 1: Read size
+    uint32_t properties_size = 0;
+    in.read(reinterpret_cast<char*>(&properties_size), sizeof(properties_size));
+
+    // Step 2: Read string
+    std::string genai_properties_str(properties_size, '\0');
+    in.read(&genai_properties_str[0], properties_size);
+
+    // Step 3: Convert to map
+    ov::AnyMap genai_properties = string_to_map(genai_properties_str);
+    std::cout << "GEN_AI_NUMBER_OF_INFER_REQUESTS" << ": " << genai_properties["GEN_AI_NUMBER_OF_INFER_REQUESTS"].as<std::string>() << std::endl;
+    
+    size_t offset_bytes = sizeof(properties_size) + properties_size;
+    ov::Tensor blob_tensor = ov::read_tensor_data(blob_path, element::u8, PartialShape::dynamic(1), offset_bytes);
     return ov::genai::utils::singleton_core().import_model(blob_tensor, device, properties);
 }
 
@@ -769,6 +865,15 @@ void export_model(ov::CompiledModel& compiled_model, const std::filesystem::path
 
     std::ofstream out(blob_path, std::ios::out | std::ios::binary);
     OPENVINO_ASSERT(out.is_open(), "Cannot open file to write: " + blob_path.string());
+
+    ov::AnyMap genai_properties{{"GEN_AI_NUMBER_OF_INFER_REQUESTS", 5}};
+
+    std::string genai_properties_str = map_to_string(genai_properties);
+    uint32_t properties_size = static_cast<uint32_t>(genai_properties_str.size());
+    out.write(reinterpret_cast<const char*>(&properties_size), sizeof(properties_size));
+    out.write(genai_properties_str.data(), properties_size);
+
+    
     compiled_model.export_model(out);
     out.close();
 }

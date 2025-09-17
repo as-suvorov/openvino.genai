@@ -13,6 +13,10 @@ int32_t main(int32_t argc, char* argv[]) try {
     const std::string device = "CPU";  // GPU can be used as well
 
     ov::genai::Text2ImagePipeline pipe(models_path, device);
+    pipe.export_model(models_path + "/blobs");
+
+
+    ov::genai::Text2ImagePipeline pipe2(models_path, device, ov::genai::blob_path(models_path + "/blobs"));
     ov::Tensor image = pipe.generate(prompt,
         ov::genai::width(512),
         ov::genai::height(512),
