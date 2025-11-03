@@ -30,6 +30,9 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::SpeculativeDecodingImpl(con
     auto main_model = main_model_desc.model;
     auto draft_model = draft_model_desc.model;
 
+    OPENVINO_ASSERT(main_model != nullptr, "Main model cannot be null");
+    OPENVINO_ASSERT(draft_model != nullptr, "Draft model cannot be null");
+
     auto main_scheduler_config = main_model_desc.scheduler_config;
     auto main_device = main_model_desc.device;
 
@@ -106,7 +109,7 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::SpeculativeDecodingImpl(con
 GenerationHandle
 ContinuousBatchingPipeline::SpeculativeDecodingImpl::add_request(uint64_t request_id,
                                                                  const ov::Tensor& input_ids,
-                                                                 ov::genai::GenerationConfig sampling_params,
+                                                                 const ov::genai::GenerationConfig& sampling_params,
                                                                  std::optional<ov::Tensor> token_type_ids) {
     std::lock_guard<std::mutex> lock(m_draft_generations_mutex);
     auto draft_sampling_params = sampling_params;
@@ -119,7 +122,7 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::add_request(uint64_t reques
 GenerationHandle
 ContinuousBatchingPipeline::SpeculativeDecodingImpl::add_request(uint64_t request_id,
                                                                  const std::string& prompt,
-                                                                 ov::genai::GenerationConfig sampling_params) {
+                                                                 const ov::genai::GenerationConfig& sampling_params) {
     std::lock_guard<std::mutex> lock(m_draft_generations_mutex);
     auto draft_sampling_params = sampling_params;
     draft_sampling_params.ignore_eos = true;
@@ -152,18 +155,16 @@ void ContinuousBatchingPipeline::SpeculativeDecodingImpl::step() {
     auto& raw_perf_counters = m_perf_metrics.raw_metrics;
     auto& main_raw_perf_counters = m_perf_metrics.main_model_metrics.raw_metrics;
 
-    ManualTimer step_timer("speculative_decoding: step()");
-    step_timer.start();
+    const auto step_start = std::chrono::steady_clock::now();
 
     m_draft_pipeline->pull_awaiting_requests(true);
     m_main_pipeline->pull_awaiting_requests();
 
     // generate candidates by draft model
-    ManualTimer draft_timer("speculative_decoding: draft_model: multistep()");
-    draft_timer.start();
+    const auto draft_start = std::chrono::steady_clock::now();
     m_draft_pipeline->multistep();
-    draft_timer.end();
-    m_sd_metrics.draft_duration += draft_timer.get_duration();
+    const auto draft_end = std::chrono::steady_clock::now();
+    m_sd_metrics.draft_duration += PerfMetrics::get_microsec(draft_end - draft_start) / 1e6;
     m_pipeline_metrics = m_main_pipeline->get_metrics();
 
     // to generate num_matches statistic
@@ -175,11 +176,11 @@ void ContinuousBatchingPipeline::SpeculativeDecodingImpl::step() {
         update_sequence_info.insert({{candidate.first, update_result}});
     }
 
-    ManualTimer main_timer("speculative_decoding: main_model: step()");
-    main_timer.start();
+    const auto main_start = std::chrono::steady_clock::now();
     m_main_pipeline->step();
-    main_timer.end();
-    m_sd_metrics.main_duration += main_timer.get_duration();
+    const auto main_end = std::chrono::steady_clock::now();
+    const auto main_duration = PerfMetrics::get_microsec(main_end - main_start);
+    m_sd_metrics.main_duration += main_duration / 1e6;
     m_pipeline_metrics = m_main_pipeline->get_metrics();
 
     auto main_generated_requests = m_main_pipeline->get_generated_requests();
@@ -208,21 +209,20 @@ void ContinuousBatchingPipeline::SpeculativeDecodingImpl::step() {
         m_sd_metrics.update_draft_accepted_tokens(request_id, (updated_seq_info.inserted_tokens_cnt - updated_seq_info.removed_tokens_cnt));
     }
 
-    step_timer.end();
+    const auto step_end = std::chrono::steady_clock::now();
+    const auto step_microsec_duration = PerfMetrics::get_microsec(step_end - step_start);
 
     // update perf metrics
     const auto num_generated_tokens = m_main_pipeline->get_processed_tokens_per_iteration();
     if (num_generated_tokens > 0) {
-        auto infer_duration = step_timer.get_duration_microsec();
-        raw_perf_counters.m_token_infer_durations.emplace_back(infer_duration);
-        raw_perf_counters.m_inference_durations[0] += MicroSeconds(infer_duration);
-        raw_perf_counters.m_new_token_times.emplace_back(main_timer.get_end_time());
+        raw_perf_counters.m_token_infer_durations.emplace_back(step_microsec_duration);
+        raw_perf_counters.m_inference_durations[0] += MicroSeconds(step_microsec_duration);
+        raw_perf_counters.m_new_token_times.emplace_back(main_end);
         raw_perf_counters.m_batch_sizes.emplace_back(num_generated_tokens);
 
-        auto main_model_gen_duration = main_timer.get_duration_microsec();
         auto m_main_pipeline_metrics = m_main_pipeline->get_metrics();
-        main_raw_perf_counters.m_durations.push_back(MicroSeconds(main_model_gen_duration));
-        main_raw_perf_counters.m_inference_durations[0] = MicroSeconds(m_main_pipeline_metrics.inference_duration);
+        main_raw_perf_counters.m_durations.push_back(MicroSeconds(main_duration));
+        main_raw_perf_counters.m_inference_durations[0] += MicroSeconds(m_main_pipeline_metrics.inference_duration);
         main_raw_perf_counters.m_batch_sizes.push_back(num_generated_tokens); // or should be processed + generated
         m_sd_metrics.update_generated_len(num_generated_tokens);
     }
@@ -247,8 +247,7 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::generate(const std::vector<
     OPENVINO_ASSERT(!has_non_finished_requests(), "Generate cannot be called while ContinuousBatchingPipeline is already in running state. Use ContinuousBatchingPipeline::add_request");
     OPENVINO_ASSERT(input_ids.size() == sampling_params.size());
 
-    ManualTimer generate_timer("speculative_decoding: generate()");
-    generate_timer.start();
+    const auto generate_start = std::chrono::steady_clock::now();
 
     // checks that all requests has the same LoRA adapters property value
     for (size_t i = 1; i < sampling_params.size(); ++i) {
@@ -266,9 +265,15 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::generate(const std::vector<
     std::vector<GenerationHandle> main_generations;
     for (size_t request_id = 0; request_id < input_ids.size(); ++request_id) {
         OPENVINO_ASSERT(1 == input_ids[request_id].get_shape().at(0), "Use multiple tensors to pass a batch.");
-        main_generations.push_back(m_main_pipeline->add_request(request_id, input_ids[request_id], sampling_params[request_id]));
+        auto main_sampling_params = sampling_params[request_id];
+        if (main_sampling_params.assistant_confidence_threshold == 0.f) {
+            if (main_sampling_params.num_assistant_tokens == 0) {
+                main_sampling_params.num_assistant_tokens = m_main_pipeline->default_num_assistant_tokens;
+            }
+        }
+        main_generations.push_back(m_main_pipeline->add_request(request_id, input_ids[request_id], main_sampling_params));
 
-        auto draft_sampling_params = sampling_params[request_id];
+        auto draft_sampling_params = main_sampling_params;
         // set the parameters do not stop draft generation without stopping of the same request for main pipeline
         draft_sampling_params.ignore_eos = true;
         draft_sampling_params.stop_strings = {};
@@ -292,7 +297,7 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::generate(const std::vector<
         stream_tokens(streamer_ptr, generation);
     }
 
-    // waiting for competion of streaming
+    // waiting for completion of streaming
     streamer_ptr->end();
 
     OPENVINO_ASSERT(is_requests_empty(), "Internal error: current request is supposed to be dropped within step() function as completed");
@@ -302,7 +307,8 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::generate(const std::vector<
 
     m_perf_metrics.draft_model_metrics.raw_metrics = m_draft_pipeline->raw_perf_metrics;
 
-    generate_timer.end();
+    const auto generate_end = std::chrono::steady_clock::now();
+    const auto generate_duration = PerfMetrics::get_microsec(generate_end - generate_start);
 
     for (size_t request_id = 0; request_id < all_requests.size(); ++request_id) {
         const auto& request = all_requests[request_id];
@@ -332,9 +338,9 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::generate(const std::vector<
 
         // The same perf metrics for each sequence, only tokenization/detokenization will differ.
         m_perf_metrics.raw_metrics.generate_durations.clear();
-        m_perf_metrics.raw_metrics.generate_durations.emplace_back(generate_timer.get_duration_microsec());
+        m_perf_metrics.raw_metrics.generate_durations.emplace_back(generate_duration);
         m_perf_metrics.num_input_tokens = request->get_prompt_len();
-        m_perf_metrics.evaluate_statistics(generate_timer.get_start_time());
+        m_perf_metrics.evaluate_statistics(generate_start);
 
         result.perf_metrics = m_perf_metrics;
         result.extended_perf_metrics = std::make_shared<SDPerModelsPerfMetrics>(m_perf_metrics);
@@ -348,6 +354,7 @@ ContinuousBatchingPipeline::SpeculativeDecodingImpl::generate(const std::vector<
 
 SpeculativeDecodingMetrics
 ContinuousBatchingPipeline::SpeculativeDecodingImpl::get_speculative_decoding_metrics() {
+    std::lock_guard<std::mutex> lock{m_draft_generations_mutex};
     return m_sd_metrics;
 };
 

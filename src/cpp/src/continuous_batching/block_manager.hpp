@@ -26,6 +26,7 @@ public:
     explicit KVCacheBlock(int index)
         : m_ref_count(0),
           m_index(index),
+          m_hash(0),
           m_timestamp(std::chrono::steady_clock::now()) { }
 
     int get_index() const {
@@ -176,6 +177,10 @@ class OverwritableBlocksHashStore {
             }
         }
         return retval;
+    }
+
+    void clear() {
+        m_blocks.clear();
     }
 };
 
@@ -490,6 +495,15 @@ public:
     size_t get_total_number_of_kv_blocks() const {
         return m_total_num_blocks;
     }
+
+    void clear() {
+        m_total_num_blocks = 0;
+        m_free_blocks_num = std::vector<size_t>(m_num_layers, 0);
+        for (auto& per_layer_block_list : m_free_blocks) {
+            per_layer_block_list.clear();
+        }
+        m_overwriteable_blocks.clear();
+    }
 };
 
 /**
@@ -700,7 +714,7 @@ public:
 
         if (!m_enable_prefix_caching) {
             for (size_t layer_idx = 0; layer_idx < m_block_table[sequence_id].size(); layer_idx++) {
-                auto block_table = m_block_table[sequence_id][layer_idx];
+                auto& block_table = m_block_table[sequence_id][layer_idx];
                 for (size_t i = 0; i < num_blocks; ++i) {
                     ov::genai::KVCacheBlock::Ptr block = m_allocator.allocate_block(layer_idx);
                     OPENVINO_ASSERT(block != nullptr);
@@ -1137,6 +1151,17 @@ public:
                 break;
             }
         }
+    }
+
+    void clear() {
+        // KV-cache should not be cleared if prefix caching is enabled
+        OPENVINO_ASSERT(m_enable_prefix_caching == false);
+
+        m_allocator.clear();
+        m_prefix_hash_to_occupied_block_map.clear();
+
+        // Block tables should be cleared when generation is finished
+        OPENVINO_ASSERT(m_block_table.empty());
     }
 };
 

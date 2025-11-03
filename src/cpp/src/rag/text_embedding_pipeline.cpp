@@ -32,6 +32,7 @@ ov::AnyMap remove_config_properties(const ov::AnyMap& properties) {
     properties_copy.erase(normalize.name());
     properties_copy.erase(embed_instruction.name());
     properties_copy.erase(query_instruction.name());
+    properties_copy.erase(padding_side.name());
 
     return properties_copy;
 }
@@ -96,6 +97,36 @@ std::shared_ptr<op::Op> get_mean_pooling_op(std::shared_ptr<Model> model,
     return std::make_shared<op::v1::Divide>(sum_hidden_state, max_expanded_mask);
 }
 
+std::shared_ptr<op::Op> get_last_token_pooling_op(std::shared_ptr<Model> model,
+                                                  const ov::Output<ov::Node>& last_hidden_state_node,
+                                                  const TextEmbeddingPipeline::Config& config) {
+    const auto left_padding = config.padding_side.has_value() && config.padding_side.value() == "left";
+
+    // shortcut for left padding. We can slice last token directly
+    if (left_padding) {
+        auto start = std::make_shared<op::v0::Constant>(ov::element::i64, ov::Shape{1}, std::vector<int64_t>{-1});
+        auto stop = std::make_shared<op::v0::Constant>(ov::element::i64,
+                                                       ov::Shape{1},
+                                                       std::vector<int64_t>{std::numeric_limits<int64_t>::max()});
+        auto step = std::make_shared<op::v0::Constant>(ov::element::i64, ov::Shape{1}, std::vector<int64_t>{1});
+        auto axis = std::make_shared<op::v0::Constant>(ov::element::i64, ov::Shape{1}, std::vector<int64_t>{1});
+
+        auto slice = std::make_shared<op::v8::Slice>(last_hidden_state_node, start, stop, step, axis);
+
+        auto squeeze_axis = std::make_shared<op::v0::Constant>(ov::element::i64, ov::Shape{1}, std::vector<int64_t>{1});
+        return std::make_shared<op::v15::Squeeze>(slice, squeeze_axis);
+    }
+
+    auto attention_mask = model->input("attention_mask").get_node()->outputs()[0];
+
+    auto axis_1 = std::make_shared<op::v0::Constant>(ov::element::i64, ov::Shape{1}, std::vector<int64_t>{1});
+    auto reduce_sum = std::make_shared<op::v1::ReduceSum>(attention_mask, axis_1);
+    auto subtract_1 = std::make_shared<op::v0::Constant>(ov::element::i64, ov::Shape{1}, std::vector<int64_t>{1});
+    auto subtract = std::make_shared<op::v1::Subtract>(reduce_sum, subtract_1);
+
+    return std::make_shared<op::v8::Gather>(last_hidden_state_node, subtract, axis_1, 1);
+}
+
 std::shared_ptr<Model> apply_postprocessing(std::shared_ptr<Model> model, const TextEmbeddingPipeline::Config& config) {
     ov::preprocess::PrePostProcessor processor(model);
 
@@ -104,6 +135,8 @@ std::shared_ptr<Model> apply_postprocessing(std::shared_ptr<Model> model, const 
             return get_cls_pooling_op(node);
         } else if (config.pooling_type == TextEmbeddingPipeline::PoolingType::MEAN) {
             return get_mean_pooling_op(model, node);
+        } else if (config.pooling_type == TextEmbeddingPipeline::PoolingType::LAST_TOKEN) {
+            return get_last_token_pooling_op(model, node, config);
         }
 
         OPENVINO_THROW("Pooling type is not supported");
@@ -119,27 +152,25 @@ std::shared_ptr<Model> apply_postprocessing(std::shared_ptr<Model> model, const 
     return processor.build();
 }
 
-class ModelConfig {
-public:
-    explicit ModelConfig(const std::filesystem::path& models_path) {
-        // config.json not found. Skip parameters initialization from file, use defaults.
-        const std::filesystem::path& json_path = models_path / "config.json";
-        if (!std::filesystem::exists(json_path)) {
-            return;
-        }
+std::optional<size_t> read_max_position_embeddings(const std::filesystem::path& models_path) {
+    // config.json not found. Skip parameters initialization from file, use defaults.
+    const std::filesystem::path& json_path = models_path / "config.json";
+    if (!std::filesystem::exists(json_path)) {
+        return std::nullopt;
+    }
 
-        using ov::genai::utils::read_json_param;
+    using ov::genai::utils::read_json_param;
 
-        std::ifstream f(json_path);
-        OPENVINO_ASSERT(f.is_open(), "Failed to open '", json_path);
+    std::ifstream f(json_path);
+    OPENVINO_ASSERT(f.is_open(), "Failed to open '", json_path);
 
-        nlohmann::json data = nlohmann::json::parse(f);
-
-        read_json_param(data, "max_position_embeddings", max_position_embeddings);
-    };
+    nlohmann::json data = nlohmann::json::parse(f);
 
     std::optional<size_t> max_position_embeddings;
-};
+    read_json_param(data, "max_position_embeddings", max_position_embeddings);
+    return max_position_embeddings;
+}
+
 }  // namespace
 
 namespace ov {
@@ -154,6 +185,7 @@ TextEmbeddingPipeline::Config::Config(const ov::AnyMap& properties) {
     read_anymap_param(properties, ov::genai::normalize.name(), normalize);
     read_anymap_param(properties, ov::genai::embed_instruction.name(), embed_instruction);
     read_anymap_param(properties, ov::genai::query_instruction.name(), query_instruction);
+    read_anymap_param(properties, ov::genai::padding_side.name(), padding_side);
 };
 
 void TextEmbeddingPipeline::Config::validate() const {
@@ -172,9 +204,8 @@ public:
                               const std::string& device,
                               const Config& config,
                               const ov::AnyMap& properties = {})
-        : m_config{config},
-          m_tokenizer{models_path, properties},
-          m_model_config{models_path} {
+        : m_tokenizer{models_path, properties},
+          m_max_position_embeddings{read_max_position_embeddings(models_path)} {
         m_config.validate();
 
         ov::Core core = utils::singleton_core();
@@ -202,6 +233,10 @@ public:
 
         if (m_config.pad_to_max_length) {
             m_tokenization_params.insert({pad_to_max_length.name(), *m_config.pad_to_max_length});
+        }
+
+        if (m_config.padding_side) {
+            m_tokenization_params.insert({padding_side.name(), *m_config.padding_side});
         }
 
         ov::CompiledModel compiled_model = core.compile_model(model, device, properties);
@@ -275,7 +310,6 @@ public:
 private:
     Tokenizer m_tokenizer;
     Config m_config;
-    ModelConfig m_model_config;
     AnyMap m_tokenization_params;
     std::atomic<bool> m_model_has_fixed_batch = false;
     std::atomic<bool> m_model_has_token_type_ids_input = false;
@@ -285,29 +319,30 @@ private:
     std::mutex m_embedding_results_mutex;
     std::promise<void> m_embedding_finished_promise;
     std::future<void> m_embedding_finished_future = m_embedding_finished_promise.get_future();
+    std::optional<size_t> m_max_position_embeddings;
 
     void reshape_model(std::shared_ptr<Model>& model) {
         ov::PartialShape target_shape{ov::Dimension::dynamic(), ov::Dimension::dynamic()};
 
         if (m_config.batch_size.has_value()) {
             target_shape[0] = ov::Dimension(*m_config.batch_size);
-            m_model_has_fixed_batch = true;
         }
 
         if (m_config.max_length.has_value()) {
-            const auto max_position_embeddings = m_model_config.max_position_embeddings;
-            if (max_position_embeddings.has_value() && *m_config.max_length > *max_position_embeddings) {
+            if (m_max_position_embeddings.has_value() && *m_config.max_length > *m_max_position_embeddings) {
                 std::stringstream message;
                 message << "max_length is set to " << *m_config.max_length
-                        << " which is greater than models max_position_embeddings (" << *max_position_embeddings << ")."
-                        << "Some models may fail with such configuration.";
+                        << " which is greater than models max_position_embeddings (" << *m_max_position_embeddings
+                        << ")."
+                        << " Some models may fail with such configuration."
+                        << " Remove max_position_embeddings from config.json to silence this warning.";
                 Logger::warn(message.str());
             }
 
             if (m_config.pad_to_max_length.has_value() && *m_config.pad_to_max_length) {
                 target_shape[1] = ov::Dimension(*m_config.max_length);
             } else {
-                target_shape[1] = ov::Dimension{0, static_cast<int64_t>(*m_config.max_length)};
+                target_shape[1] = ov::Dimension{1, static_cast<int64_t>(*m_config.max_length)};
             }
         }
 
@@ -315,7 +350,7 @@ private:
         input_name_to_shape["input_ids"] = target_shape;
         input_name_to_shape["attention_mask"] = target_shape;
 
-        if (m_model_has_token_type_ids_input) {
+        if (has_token_type_ids_input(model->inputs())) {
             input_name_to_shape["token_type_ids"] = target_shape;
         }
 

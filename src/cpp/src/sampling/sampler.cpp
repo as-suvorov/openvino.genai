@@ -4,6 +4,7 @@
 #include <future>
 
 #include "sampling/sampler.hpp"
+#include "tokenizer/tokenizer_impl.hpp"
 
 namespace ov::genai {
 // Modified Knuth–Morris–Pratt algorithm which returns tokens following after every needle occurrence in haystack
@@ -156,7 +157,7 @@ MatchStopStringResult match_stop_string(Tokenizer& tokenizer,
 // Number of tokens might not be exact as if there's no direct token match, we decode generated tokens incrementally expanding decoding scope
 // with 4 next tokens with each iteration until we check all tokens.
 int match_stop_string2(Tokenizer & tokenizer, const TokenIds & generated_tokens, const std::set<std::string> & stop_strings) {
-    for (auto stop_string: stop_strings) {
+    for (const auto& stop_string: stop_strings) {
         auto stop_tokens_ov = tokenizer.encode(stop_string).input_ids;
         size_t num_tokens = stop_tokens_ov.get_size();
         if(num_tokens > generated_tokens.size())
@@ -242,8 +243,8 @@ std::map<size_t, int32_t> Sampler::GroupBeamSearcher::get_beam_idxs() {
 }
 
 std::pair<std::map<std::string, float>, std::vector<float>> Sampler::get_structured_output_times() {
-    if (m_structured_output_controller) {
-        return m_structured_output_controller->get_times();
+    if (m_tokenizer.m_pimpl != nullptr && m_tokenizer.m_pimpl->get_structured_output_controller()) {
+        return m_tokenizer.m_pimpl->get_structured_output_controller()->get_times();
     } else {
         // If compiled without structured output support, return empty times
         return {{}, {}};
@@ -251,8 +252,8 @@ std::pair<std::map<std::string, float>, std::vector<float>> Sampler::get_structu
 }
 
 void Sampler::clear_structured_output_compile_times() {
-    if (m_structured_output_controller) {
-        m_structured_output_controller->clear_compile_times();
+    if (m_tokenizer.m_pimpl != nullptr && m_tokenizer.m_pimpl->get_structured_output_controller()) {
+        m_tokenizer.m_pimpl->get_structured_output_controller()->clear_compile_times();
     }
 }
 
@@ -424,7 +425,7 @@ void Sampler::GroupBeamSearcher::select_next_tokens(const ov::Tensor& logits,
             parent_2_num_childs_map[candidate.m_sequence->get_id()] += 1;
             child_beams_per_group[group_id].push_back(candidate);
 
-            // if num childs are enough
+            // if num children are enough
             if (child_beams_per_group[group_id].size() == group_size) {
                 break;
             }
@@ -568,7 +569,7 @@ std::vector<Token> Sampler::_multinomial_sample(const Logits& logits, size_t num
 }
 
 std::vector<int64_t> Sampler::_try_finish_generation(SequenceGroup::Ptr & sequence_group) {
-    auto sampling_params = sequence_group->get_sampling_parameters();
+    const auto& sampling_params = sequence_group->get_sampling_parameters();
     std::vector<int64_t> dropped_seq_ids;
     for (auto& running_sequence : sequence_group->get_running_sequences()) {
         const auto generated_len = running_sequence->get_generated_len();
@@ -668,7 +669,7 @@ align_all_sequence_len(SequenceGroup::Ptr& sequence_group,
                        size_t min_generated_tokens,
                        LogitProcessor& logit_processor) {
     for (auto& sequence : sequence_group->get_running_sequences()) {
-        const auto generated_token_ids = sequence->get_generated_ids();
+        const auto& generated_token_ids = sequence->get_generated_ids();
         auto generated_len = sequence->get_generated_len();
         if (generated_len > min_generated_tokens) {
             auto removed_token_cnt = generated_len - min_generated_tokens;
@@ -875,7 +876,7 @@ SequenceGroupSamplingInfo Sampler::sample_from_sequence_group(SequenceGroup::Ptr
                 if (!is_validation_passed) {
                     break;
                 } else {
-                    auto sampling_params = sequence_group->get_sampling_parameters();
+                    const auto& sampling_params = sequence_group->get_sampling_parameters();
                     if (is_stop_token_id_hit(sampled_token.m_index, sampling_params.stop_token_ids) && !sampling_params.ignore_eos) {
                         running_sequence->set_status(SequenceStatus::FINISHED);
                         running_sequence->set_finish_reason(GenerationFinishReason::STOP);
@@ -941,15 +942,21 @@ SamplerOutput Sampler::sample(const std::vector<SequenceGroup::Ptr> & sequence_g
 
         const auto request_id = sequence_group->get_request_id();
         if (!m_logit_processors.count(request_id)) {
-            if (!m_structured_output_controller) {
-                m_structured_output_controller = std::make_shared<StructuredOutputController>(m_tokenizer, vocab_size);
+            std::shared_ptr<StructuredOutputController> structured_output_controller = nullptr;
+            if (m_tokenizer.m_pimpl != nullptr) {
+                structured_output_controller = m_tokenizer.m_pimpl->get_structured_output_controller(vocab_size);
             }
-            m_logit_processors.insert({request_id, LogitProcessor(sampling_params, sequence_group->get_prompt_ids(), m_structured_output_controller)});
+            m_logit_processors.insert({request_id, LogitProcessor(sampling_params, sequence_group->get_prompt_ids(), structured_output_controller)});
         }
         if (!m_stop_strings.count(request_id)) {
-            auto processed_stop_string = process_stop_strings(sampling_params.stop_strings, m_tokenizer);
-            m_stop_strings.insert({request_id, processed_stop_string});
-            sequence_group->set_stream_window_size(processed_stop_string.first);
+            if (!sampling_params.stop_strings.empty()) {
+                OPENVINO_ASSERT(m_tokenizer.m_pimpl != nullptr, "Stop strings require a valid tokenizer");
+                auto processed_stop_string = process_stop_strings(sampling_params.stop_strings, m_tokenizer);
+                m_stop_strings.insert({static_cast<int64_t>(request_id), processed_stop_string});
+                sequence_group->set_stream_window_size(processed_stop_string.first);
+            } else {
+                m_stop_strings.insert({static_cast<int64_t>(request_id), {size_t(0), {}}});
+            }
         }
         const auto& stop_strings = m_stop_strings.at(request_id);
         auto& logit_processor = m_logit_processors.at(request_id);
@@ -1017,13 +1024,11 @@ LogitProcessor& Sampler::get_logit_processor(uint64_t request_id) {
 
 
 void Sampler::create_logit_processor(uint64_t request_id, const GenerationConfig& sampling_params, const TokenIds& prompt) {
-    if (!m_structured_output_controller) {
-        // We don't have vocab size (actually logits size) and also we don't have access to the logits.
-        // vocab size will be taken from the tokenizer during LogitProcessor initialization.
-        m_structured_output_controller = std::make_shared<StructuredOutputController>(m_tokenizer);
+    std::shared_ptr<StructuredOutputController> structured_output_controller = nullptr;
+    if (m_tokenizer.m_pimpl != nullptr) {
+        structured_output_controller = m_tokenizer.m_pimpl->get_structured_output_controller();
     }
-
-    m_logit_processors.insert({request_id, LogitProcessor(sampling_params, prompt, m_structured_output_controller)});
+    m_logit_processors.insert({request_id, LogitProcessor(sampling_params, prompt, structured_output_controller)});
 }
 
 void Sampler::clear_request_info(uint64_t request_id) {

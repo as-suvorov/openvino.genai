@@ -27,6 +27,13 @@ public:
          * @brief The average of all token embeddings
          */
         MEAN = 1,
+
+        /**
+         * @brief Last token embeddings
+         * 
+         * @note Specifying `ov::genai::padding_side = "left"` can optimize performance for this pooling type.
+         */
+        LAST_TOKEN = 2,
     };
 
     struct OPENVINO_GENAI_EXPORTS Config {
@@ -41,10 +48,15 @@ public:
         std::optional<bool> pad_to_max_length;
 
         /**
+         * @brief Side to use for padding "left" or "right"
+         */
+        std::optional<std::string> padding_side;
+
+        /**
          * @brief Batch size of embedding model.
-         * Useful for database population. If set, the pipeline will fix model shape for inference optimization. Number
-         * of documents passed to pipeline should be equal to batch_size
-         * For query embeddings, batch_size should be set to 1 or not set
+         * Useful for database population. If set, the pipeline will fix model shape for inference optimization. 
+         * Number of documents passed to pipeline should be equal to batch_size.
+         * For query embeddings, batch_size should be set to 1 or not set.
          */
         std::optional<size_t> batch_size;
 

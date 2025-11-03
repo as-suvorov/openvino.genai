@@ -162,8 +162,8 @@ public:
                 std::vector<int64_t> token_id(generated_token_id.begin() + offset, generated_token_id.begin() + offset_back);
                 std::vector<float> log_probs(generated_log_probs.begin() + offset, generated_log_probs.begin() + offset_back);
 
-                output.generated_ids = token_id;
-                output.generated_log_probs = log_probs;
+                output.generated_ids = std::move(token_id);
+                output.generated_log_probs = std::move(log_probs);
                 output.finish_reason = get_finish_reason();
             }
         }
@@ -270,6 +270,7 @@ class SequenceGroup  : public std::enable_shared_from_this<SequenceGroup> {
         : m_request_id(request_id),
           m_sampling_params(sampling_params),
           m_block_size(block_size),
+          m_sequence_group_type(SequenceGroupType::TOKENS),
           m_generation_stream(GenerationStream::create()) { }
 
     bool out_of_memory() const {
@@ -420,7 +421,7 @@ public:
         return *it;
     }
 
-    // must be used only after sequence group generation loop has finished (either by lenght or OOM)
+    // must be used only after sequence group generation loop has finished (either by length or OOM)
     // or stopped / cancelled via streamer / generation_stream->stop() / generation_stream->cancel()
     std::vector<Sequence::CPtr> get_finished_sequences() const {
         std::vector<Sequence::CPtr> finished_seqs;

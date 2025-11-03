@@ -1,10 +1,9 @@
-#include "include/helper.hpp"
+#include "include/llm_pipeline/llm_pipeline_wrapper.hpp"
 
 #include <future>
 #include "include/addon.hpp"
 #include "include/helper.hpp"
 #include "include/perf_metrics.hpp"
-#include "include/llm_pipeline/llm_pipeline_wrapper.hpp"
 #include "include/llm_pipeline/start_chat_worker.hpp"
 #include "include/llm_pipeline/finish_chat_worker.hpp"
 #include "include/llm_pipeline/init_worker.hpp"
@@ -111,9 +110,10 @@ Napi::Value LLMPipelineWrapper::init(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     const std::string model_path = info[0].ToString();
     const std::string device = info[1].ToString();
-    Napi::Function callback = info[2].As<Napi::Function>();
+    const auto& properties = js_to_cpp<ov::AnyMap>(info.Env(), info[2]);
+    Napi::Function callback = info[3].As<Napi::Function>();
 
-    InitWorker* asyncWorker = new InitWorker(callback, this->pipe, model_path, device);
+    InitWorker* asyncWorker = new InitWorker(callback, this->pipe, model_path, device, properties);
     asyncWorker->Queue();
 
     return info.Env().Undefined();
@@ -125,10 +125,10 @@ Napi::Value LLMPipelineWrapper::generate(const Napi::CallbackInfo& info) {
 
     try {
         ov::genai::StringInputs prompt = js_to_cpp<ov::genai::StringInputs>(env, info[0]);
-        auto generation_config = to_anyMap(info.Env(), info[2]);
+        auto generation_config = js_to_cpp<ov::AnyMap>(info.Env(), info[2]);
         ov::AnyMap options;
         if (info.Length() == 4) {
-            options = to_anyMap(info.Env(), info[3]);
+            options = js_to_cpp<ov::AnyMap>(info.Env(), info[3]);
         }
 
         context = new TsfnContext(prompt);
@@ -167,9 +167,14 @@ Napi::Value LLMPipelineWrapper::generate(const Napi::CallbackInfo& info) {
 
 Napi::Value LLMPipelineWrapper::start_chat(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    Napi::Function callback = info[0].As<Napi::Function>();
+    OPENVINO_ASSERT(
+        info.Length() == 2 && info[0].IsString() && info[1].IsFunction(),
+        "startChat expects 2 arguments: system_message and callback function"
+    );
+    auto system_message = js_to_cpp<std::string>(info.Env(), info[0]);
+    auto callback = info[1].As<Napi::Function>();
 
-    StartChatWorker* asyncWorker = new StartChatWorker(callback, this->pipe);
+    StartChatWorker* asyncWorker = new StartChatWorker(callback, this->pipe, system_message);
     asyncWorker->Queue();
 
     return info.Env().Undefined();

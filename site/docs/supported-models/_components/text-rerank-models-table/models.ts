@@ -1,5 +1,6 @@
 type TextRerankModelType = {
   architecture: string;
+  optimumIntelTask: string;
   models: Array<{
     links: string[];
   }>;
@@ -8,6 +9,7 @@ type TextRerankModelType = {
 export const TEXT_RERANK_MODELS: TextRerankModelType[] = [
   {
     architecture: 'BertForSequenceClassification',
+    optimumIntelTask: 'text-classification',
     models: [
       {
         links: [
@@ -23,25 +25,18 @@ export const TEXT_RERANK_MODELS: TextRerankModelType[] = [
   },
   {
     architecture: 'XLMRobertaForSequenceClassification',
+    optimumIntelTask: 'text-classification',
     models: [
       {
         links: [
           'https://huggingface.co/BAAI/bge-reranker-v2-m3',
-          'https://huggingface.co/BAAI/bge-reranker-base',
         ],
       },
     ],
   },
   {
-    architecture: 'GemmaForCausalLM',
-    models: [
-      {
-        links: ['https://huggingface.co/BAAI/bge-reranker-v2-gemma'],
-      },
-    ],
-  },
-  {
     architecture: 'ModernBertForSequenceClassification',
+    optimumIntelTask: 'text-classification',
     models: [
       {
         links: [
@@ -53,10 +48,15 @@ export const TEXT_RERANK_MODELS: TextRerankModelType[] = [
     ],
   },
   {
-    architecture: 'ModernBertForMaskedLM',
+    architecture: 'Qwen3ForCausalLM',
+    optimumIntelTask: 'text-generation-with-past',
     models: [
       {
-        links: ['https://huggingface.co/answerdotai/ModernBERT-base'],
+        links: [
+          'https://huggingface.co/Qwen/Qwen3-Reranker-0.6B',
+          'https://huggingface.co/Qwen/Qwen3-Reranker-4B',
+          'https://huggingface.co/Qwen/Qwen3-Reranker-8B'
+        ],
       },
     ],
   },
