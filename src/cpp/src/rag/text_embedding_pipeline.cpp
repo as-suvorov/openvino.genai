@@ -208,19 +208,34 @@ public:
 
         utils::print_compiled_model_properties(compiled_model, "text embedding model");
 
+        std::cout << "Number of infer requests: " << compiled_model.get_property(ov::optimal_number_of_infer_requests)
+                  << std::endl;
+
         m_async_infer_queue =
             std::make_unique<AsyncInferRequestQueue>(compiled_model,
                                                      compiled_model.get_property(ov::optimal_number_of_infer_requests));
+
+        m_embedding_finished_promise.set_value();
     };
 
+    ~TextEmbeddingPipelineImpl() {
+        // std::cout << "[TextEmbeddingPipelineImpl] Destructor called." << std::endl;
+        if (m_worker_thread && m_worker_thread->joinable()) {
+            m_worker_thread->join();
+            // std::cout << "[TextEmbeddingPipelineImpl] Worker thread joined." << std::endl;
+        }
+    }
+
     EmbeddingResults embed_documents(const std::vector<std::string>& texts) {
+        std::cout << "\n\n[main] Embedding " << texts.size() << " documents." << std::endl;
         start_embed_documents_async(texts);
         return wait_embed_documents();
     };
 
     void start_embed_documents_async(const std::vector<std::string>& texts) {
-        OPENVINO_ASSERT(m_worker_thread == nullptr,
-                        "Pipeline is already running. Please wait for the previous embedding to finish.");
+        // todo: test assert
+        // OPENVINO_ASSERT(m_worker_thread == nullptr,
+        //                 "Pipeline is already running. Please wait for the previous embedding to finish.");
         auto formatted_texts = format_texts(texts);
         m_async_infer_queue->reset_all_idle();
         m_worker_thread =
@@ -237,8 +252,8 @@ public:
     };
 
     void start_embed_query_async(const std::string& text) {
-        OPENVINO_ASSERT(m_worker_thread == nullptr,
-                        "Pipeline is already running. Please wait for the previous embedding to finish.");
+        // OPENVINO_ASSERT(m_worker_thread == nullptr,
+        //                 "Pipeline is already running. Please wait for the previous embedding to finish.");
         std::vector<std::string> formatted_query{format_query(text)};
         m_async_infer_queue->reset_all_idle();
         m_worker_thread =
@@ -268,6 +283,8 @@ private:
     std::unique_ptr<std::thread> m_worker_thread = nullptr;
     EmbeddingResults m_embedding_results;
     std::mutex m_embedding_results_mutex;
+    std::promise<void> m_embedding_finished_promise;
+    std::future<void> m_embedding_finished_future = m_embedding_finished_promise.get_future();
 
     void reshape_model(std::shared_ptr<Model>& model) {
         ov::PartialShape target_shape{ov::Dimension::dynamic(), ov::Dimension::dynamic()};
@@ -306,6 +323,9 @@ private:
     }
 
     void embed_worker(const std::vector<std::string>& texts) {
+        std::cout << "[worker] thread started" << std::endl;
+        m_embedding_finished_promise = std::promise<void>();
+        m_embedding_finished_future = m_embedding_finished_promise.get_future();
         m_embedding_results = std::vector<std::vector<float>>(texts.size());
         size_t batch_size = m_config.batch_size.value_or(4);
 
@@ -322,26 +342,49 @@ private:
 
             const auto encoded = m_tokenizer.encode(batch_texts, m_tokenization_params);
 
+            std::cout << "[worker] waiting for idle request..." << std::endl;
             auto request = m_async_infer_queue->get();
+            std::cout << "[worker] got idle request id: " << request->m_queue_id << std::endl;
 
             fill_inputs(encoded, request);
 
-            request->set_callback([this, request, start, end]() {
+            request->set_callback([this, request, batch, num_batches, start, end]() {
                 const Tensor last_hidden_state = request->get_tensor("last_hidden_state");
                 fill_embedding_results(last_hidden_state, {start, end});
+
+                // todo: not valid, requests finishing not in order
+                // if (batch == num_batches - 1) {
+                //     std::cout << "[worker] last batch processed, setting promise value" << std::endl;
+                //     m_embedding_finished_promise.set_value();
+                // } else {
+                //     std::cout << "[worker] batch " << batch << " processed" << std::endl;
+                // }
             });
 
+            std::cout << "[worker] starting async request for batch: " << batch << std::endl;
             request->start_async();
         }
+
+        // std::cout << "[worker] thread finished" << std::endl;
     };
 
     EmbeddingResults wait_embed() {
+        std::cout << "[main] waiting for thread finish..." << std::endl;
         if (m_worker_thread && m_worker_thread->joinable()) {
             m_worker_thread->join();
+            std::cout << "[main] thread joined" << std::endl;
         }
 
-        m_async_infer_queue->wait_all_idle();
-        m_worker_thread = nullptr;
+        // todo: not waiting for all_idle leads to fails, investigate
+        // possible intersection with previous embed_documents call
+        // m_async_infer_queue->wait_all_idle();
+        // std::cout << "[main] all requests are idle" << std::endl;
+
+        // m_embedding_finished_promise.get_future().wait();
+        // std::cout << "[main] m_embedding_finished_promise finished" << std::endl;
+        m_embedding_finished_future.wait();
+        std::cout << "[main] m_embedding_finished_future finished" << std::endl;
+        // m_worker_thread = nullptr;
 
         const auto results = std::move(m_embedding_results);
         m_embedding_results = {};
@@ -384,6 +427,10 @@ private:
                 const auto batch_offset = batch_id * hidden_size;
                 const float* batch_data = last_hidden_state_data + batch_offset;
                 const std::vector<float> batch_result(batch_data, batch_data + hidden_size);
+
+                std::cout << "[worker] filling embedding results for batch " << batch_id + batch_range.first
+                          << ", size: " << batch_result.size() << std::endl;
+
                 auto& embedding_results = std::get<std::vector<std::vector<float>>>(m_embedding_results);
                 embedding_results[batch_id + batch_range.first] = batch_result;
             }

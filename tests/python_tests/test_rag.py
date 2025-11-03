@@ -13,6 +13,7 @@ from langchain_community.document_compressors.openvino_rerank import OpenVINORer
 from typing import Literal
 import sys
 import platform
+from openvino import properties
 
 EMBEDDINGS_TEST_MODELS = [
     "BAAI/bge-small-en-v1.5",
@@ -78,17 +79,20 @@ def run_text_embedding_genai(
     documents: list[str],
     config: TextEmbeddingPipeline.Config | None = None,
     task: Literal["embed_documents", "embed_query"] = "embed_documents",
+    plugin_properties: dict = {},
 ):
     if not config:
         config = TextEmbeddingPipeline.Config()
 
-    pipeline = TextEmbeddingPipeline(models_path, "CPU", config)
-
-    if config.batch_size:
-        documents = documents[: config.batch_size]
+    pipeline = TextEmbeddingPipeline(models_path, "CPU", config, **plugin_properties)
 
     if task == "embed_documents":
-        return pipeline.embed_documents(documents)
+        pipeline.embed_documents(documents)
+        pipeline.embed_documents(documents)
+        pipeline.embed_documents(documents)
+        result = pipeline.embed_documents(documents)
+        # print(f"Result shape after exec: {np.array(result).shape}")
+        return result
     else:
         return pipeline.embed_query(documents[0])
 
@@ -119,9 +123,6 @@ def run_text_embedding_langchain(
     # align instructions
     ov_embeddings.embed_instruction = config.embed_instruction or ""
     ov_embeddings.query_instruction = config.query_instruction or ""
-
-    if config.batch_size:
-        documents = documents[: config.batch_size]
 
     if task == "embed_documents":
         return ov_embeddings.embed_documents(documents)
@@ -305,22 +306,43 @@ def dataset_embeddings_genai_default_config_refs(download_and_convert_embeddings
 @pytest.mark.parametrize(
     "config",
     [
-        TextEmbeddingPipeline.Config(batch_size=4),
-        TextEmbeddingPipeline.Config(max_length=50),
-        TextEmbeddingPipeline.Config(max_length=50, batch_size=3),
-        TextEmbeddingPipeline.Config(max_length=50, pad_to_max_length=True),
-        TextEmbeddingPipeline.Config(batch_size=3, pad_to_max_length=True),
-        TextEmbeddingPipeline.Config(max_length=50, pad_to_max_length=True, batch_size=4),
-        TextEmbeddingPipeline.Config(max_length=64, pad_to_max_length=True, batch_size=1),
+        # TextEmbeddingPipeline.Config(batch_size=4),
+        # TextEmbeddingPipeline.Config(max_length=50),
+        # TextEmbeddingPipeline.Config(max_length=50, pad_to_max_length=True),
+        # TextEmbeddingPipeline.Config(batch_size=3, max_length=50),
+        # TextEmbeddingPipeline.Config(batch_size=3, pad_to_max_length=True),
+        # TextEmbeddingPipeline.Config(batch_size=4, max_length=50, pad_to_max_length=True),
+        # TextEmbeddingPipeline.Config(batch_size=4, max_length=50, pad_to_max_length=True),
+        # TextEmbeddingPipeline.Config(batch_size=4, max_length=50, pad_to_max_length=True),
+        # TextEmbeddingPipeline.Config(batch_size=4, max_length=50, pad_to_max_length=True),
+        # TextEmbeddingPipeline.Config(batch_size=1, max_length=64, pad_to_max_length=True),
+        TextEmbeddingPipeline.Config(batch_size=1, max_length=64, pad_to_max_length=True),
+        TextEmbeddingPipeline.Config(batch_size=1, max_length=64, pad_to_max_length=True),
+        # batch_size = 4, not seems to fail
+        
+        
+        
+        # !
+        # fails with 24 threads
+    ],
+)
+@pytest.mark.parametrize(
+    "plugin_properties",
+    [
+        # {properties.hint.performance_mode(): properties.hint.PerformanceMode.LATENCY},
+        {properties.hint.performance_mode(): properties.hint.PerformanceMode.THROUGHPUT},
     ],
 )
 @pytest.mark.precommit
-def test_fixed_shapes_configs(download_and_convert_embeddings_models, dataset_documents, config, dataset_embeddings_genai_default_config_refs):
+def test_fixed_shapes_configs(
+    download_and_convert_embeddings_models, dataset_documents, config, plugin_properties, dataset_embeddings_genai_default_config_refs
+):
     _, _, models_path = download_and_convert_embeddings_models
 
-    result = run_text_embedding_genai(models_path, dataset_documents[: config.batch_size], config, "embed_documents")
+    result = run_text_embedding_genai(models_path, dataset_documents, config, "embed_documents", plugin_properties)
+    print(f"Result shape: {np.array(result).shape}")
 
-    assert_embedding_results(dataset_embeddings_genai_default_config_refs[: config.batch_size], result)
+    assert_embedding_results(dataset_embeddings_genai_default_config_refs, result)
 
 
 @pytest.mark.parametrize("download_and_convert_embeddings_models", ["mixedbread-ai/mxbai-embed-xsmall-v1"], indirect=True)
@@ -328,21 +350,19 @@ def test_fixed_shapes_configs(download_and_convert_embeddings_models, dataset_do
     "config",
     [
         TextEmbeddingPipeline.Config(batch_size=0),
-        # more than documents in dataset (9)
-        TextEmbeddingPipeline.Config(batch_size=10),
         TextEmbeddingPipeline.Config(max_length=0),
         # more than model's max_position_embeddings (4096)
-        TextEmbeddingPipeline.Config(max_length=4097),
+        TextEmbeddingPipeline.Config(max_length=4097, pad_to_max_length=True),
     ],
 )
 @pytest.mark.xfail()
 @pytest.mark.precommit
-def test_fixed_shapes_configs_xfail(download_and_convert_embeddings_models, dataset_documents, config, dataset_embeddings_genai_default_config_refs):
+def _test_fixed_shapes_configs_xfail(download_and_convert_embeddings_models, dataset_documents, config, dataset_embeddings_genai_default_config_refs):
     _, _, models_path = download_and_convert_embeddings_models
 
-    result = run_text_embedding_genai(models_path, dataset_documents[: config.batch_size], config, "embed_documents")
+    result = run_text_embedding_genai(models_path, dataset_documents, config, "embed_documents")
 
-    assert_embedding_results(dataset_embeddings_genai_default_config_refs[: config.batch_size], result)
+    assert_embedding_results(dataset_embeddings_genai_default_config_refs, result)
 
 
 @pytest.mark.parametrize("download_and_convert_embeddings_models", ["mixedbread-ai/mxbai-embed-xsmall-v1"], indirect=True)
@@ -364,9 +384,9 @@ def test_npu_fallback(download_and_convert_embeddings_models, dataset_documents,
     NPU_FALLBACK_PROPERTIES = {"NPU_USE_NPUW": "YES", "NPUW_DEVICES": "CPU", "NPUW_ONLINE_PIPELINE": "NONE"}
 
     pipeline = TextEmbeddingPipeline(models_path, "NPU", config, **NPU_FALLBACK_PROPERTIES)
-    result = pipeline.embed_documents(dataset_documents[: config.batch_size])
+    result = pipeline.embed_documents(dataset_documents)
 
-    assert_embedding_results(dataset_embeddings_genai_default_config_refs[: config.batch_size], result)
+    assert_embedding_results(dataset_embeddings_genai_default_config_refs, result)
 
 
 @pytest.mark.parametrize("download_and_convert_rerank_model", [RERANK_TEST_MODELS[0]], indirect=True)

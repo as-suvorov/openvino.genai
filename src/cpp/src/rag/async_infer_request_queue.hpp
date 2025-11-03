@@ -52,10 +52,11 @@ public:
         m_infer_request.wait();
     }
 
+    int m_queue_id = -1;
+
 private:
     InferRequest m_infer_request;
     std::function<void()> m_callback;
-    int m_queue_id = -1;
 };
 
 class AsyncInferRequestQueue {
@@ -63,7 +64,9 @@ public:
     AsyncInferRequestQueue(CompiledModel& model, const size_t length)
         : m_queue{CircularBufferQueue<std::shared_ptr<InferRequestAsyncWrapper>>(length, [this, &model]() {
               return std::make_shared<InferRequestAsyncWrapper>(model, m_bound_on_request_finished);
-          })} {}
+          })} {
+        m_all_idle_promise = std::promise<void>();
+    }
 
     std::shared_ptr<InferRequestAsyncWrapper> get() {
         const int queue_id = m_queue.get_idle().get();

@@ -68,6 +68,19 @@ void init_rag_pipelines(py::module_& m) {
                         res = pipe.embed_documents(texts);
                     }
                     return py::cast(res);
+
+                    // EmbeddingResults results = pipe.embed_documents(texts);
+
+                    // std::cout << "Embedding results batch size: "
+                    //           << std::get<std::vector<std::vector<float>>>(results).size() << std::endl;
+                    // for (const auto& res : std::get<std::vector<std::vector<float>>>(results)) {
+                    //     std::cout << "Embedding size: " << res.size() << std::endl;
+                    // }
+
+                    // // create a copy of the results to avoid issues with GIL
+                    // std::vector<std::vector<float>> copy_results = std::get<std::vector<std::vector<float>>>(results);
+
+                    // return py::cast(copy_results);
                 },
                 py::arg("texts"),
                 "List of texts ",
