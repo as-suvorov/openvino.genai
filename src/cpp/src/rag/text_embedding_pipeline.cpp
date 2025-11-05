@@ -4,6 +4,7 @@
 #include "openvino/genai/rag/text_embedding_pipeline.hpp"
 
 #include <fstream>
+#include <future>
 #include <nlohmann/json.hpp>
 
 #include "async_infer_request_queue.hpp"
@@ -266,10 +267,9 @@ public:
     };
 
     void start_embed_documents_async(const std::vector<std::string>& texts) {
-        OPENVINO_ASSERT(m_worker_thread == nullptr, "Pipeline is already running.");
+        OPENVINO_ASSERT(!m_future.valid(), "Pipeline is already running.");
         auto formatted_texts = format_texts(texts);
-        m_worker_thread =
-            std::make_unique<std::thread>(&TextEmbeddingPipelineImpl::embed_worker, this, formatted_texts);
+        m_future = std::async(std::launch::async, &TextEmbeddingPipelineImpl::embed_worker, this, formatted_texts);
     };
 
     EmbeddingResults wait_embed_documents() {
@@ -282,10 +282,9 @@ public:
     };
 
     void start_embed_query_async(const std::string& text) {
-        OPENVINO_ASSERT(m_worker_thread == nullptr, "Pipeline is already running.");
+        OPENVINO_ASSERT(!m_future.valid(), "Pipeline is already running.");
         std::vector<std::string> formatted_query{format_query(text)};
-        m_worker_thread =
-            std::make_unique<std::thread>(&TextEmbeddingPipelineImpl::embed_worker, this, formatted_query);
+        m_future = std::async(std::launch::async, &TextEmbeddingPipelineImpl::embed_worker, this, formatted_query);
     };
 
     EmbeddingResult wait_embed_query() {
@@ -307,7 +306,7 @@ private:
     std::atomic<bool> m_model_has_fixed_batch = false;
     std::atomic<bool> m_model_has_token_type_ids_input = false;
     std::unique_ptr<AsyncInferRequestQueue> m_async_infer_queue;
-    std::unique_ptr<std::thread> m_worker_thread = nullptr;
+    std::future<EmbeddingResults> m_future;
     EmbeddingResults m_embedding_results;
     std::mutex m_embedding_results_mutex;
     std::optional<size_t> m_max_position_embeddings;
@@ -349,7 +348,7 @@ private:
         model->reshape(input_name_to_shape);
     }
 
-    void embed_worker(const std::vector<std::string>& texts) {
+    EmbeddingResults embed_worker(const std::vector<std::string>& texts) {
         std::cout << "[worker] thread started" << std::endl;
         m_embedding_results = std::vector<std::vector<float>>(texts.size());
         size_t batch_size = m_config.batch_size.value_or(4);
@@ -369,10 +368,14 @@ private:
             const auto encoded = m_tokenizer.encode(batch_texts, m_tokenization_params);
 
             std::cout << "[worker] waiting for idle request..." << std::endl;
+
+            // todo: implement guard to return to queue in case of exception
             auto request = m_async_infer_queue->get_request();
             std::cout << "[worker] got idle request id: " << request->get_queue_id() << std::endl;
 
             fill_inputs(encoded, request);
+
+            throw std::runtime_error("Debug exception");
 
             request->set_callback([this, request, batch, num_batches, start, end]() {
                 const Tensor last_hidden_state = request->get_tensor("last_hidden_state");
@@ -383,22 +386,22 @@ private:
             request->start_async();
         }
 
-        std::cout << "[worker] thread finished" << std::endl;
+        std::cout << "[worker] waiting for all async requests to complete..." << std::endl;
+        m_async_infer_queue->wait_all_idle();
+        std::cout << "[worker] all requests are idle" << std::endl;
+
+        std::cout << "[worker] thread finished, returning results" << std::endl;
+        return std::move(m_embedding_results);
     };
 
     EmbeddingResults wait_embed() {
-        std::cout << "[main] waiting for thread finish..." << std::endl;
-        if (m_worker_thread && m_worker_thread->joinable()) {
-            m_worker_thread->join();
-            std::cout << "[main] thread joined" << std::endl;
+        std::cout << "[main] waiting for future result..." << std::endl;
+        if (!m_future.valid()) {
+            std::cout << "[main] future is not valid, no async operation in progress" << std::endl;
+            return std::vector<std::vector<float>>{};  // Return empty results
         }
 
-        m_worker_thread.reset();
-
-        m_async_infer_queue->wait_all_idle();
-        std::cout << "[main] all requests are idle" << std::endl;
-
-        return m_embedding_results;
+        return m_future.get();
     };
 
     std::vector<std::string> format_texts(const std::vector<std::string>& texts) {

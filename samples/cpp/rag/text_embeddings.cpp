@@ -116,16 +116,16 @@ void measure_performance(ov::genai::TextEmbeddingPipeline& pipeline,
               << " runs...\n";
     const auto start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < no_of_runs; i++) {
-        ov::genai::TextEmbeddingPipeline::Config config;
+        // ov::genai::TextEmbeddingPipeline::Config config;
         // config.pooling_type = ov::genai::TextEmbeddingPipeline::PoolingType::MEAN;
-        config.batch_size = 1;
-        config.max_length = 64;
-        config.pad_to_max_length = true;
+        // config.batch_size = 1;
+        // config.max_length = 64;
+        // config.pad_to_max_length = true;
 
-        ov::AnyMap properties{{ov::hint::performance_mode.name(), ov::hint::PerformanceMode::THROUGHPUT}};
+        // ov::AnyMap properties{{ov::hint::performance_mode.name(), ov::hint::PerformanceMode::THROUGHPUT}};
         // properties.insert(npu_fallback_config.begin(), npu_fallback_config.end());
 
-        ov::genai::TextEmbeddingPipeline pipeline(models_path, "CPU", config);
+        // ov::genai::TextEmbeddingPipeline pipeline(models_path, "CPU", config);
         std::cout << "Run " << i + 1 << " of " << no_of_runs << std::endl;
         pipeline.embed_documents(documents);
         pipeline.embed_documents(documents);
@@ -240,11 +240,24 @@ int main(int argc, char* argv[]) try {
     // Average time for embedding 200 documents: 3146 ms
 
     // warm up
+
     try {
-        pipeline.embed_documents(documents);
+        pipeline.start_embed_documents_async(documents);
     } catch (const std::exception& e) {
         std::cerr << "Warm-up embedding failed: " << e.what() << std::endl;
     }
+    
+    try {
+        pipeline.wait_embed_documents();
+    } catch (const std::exception& e) {
+        std::cerr << "Warm-up embedding failed: " << e.what() << std::endl;
+    }
+
+    // try {
+    //     pipeline.embed_documents(documents);
+    // } catch (const std::exception& e) {
+    //     std::cerr << "Warm-up embedding failed: " << e.what() << std::endl;
+    // }
 
     const size_t number_of_runs = 20;
     measure_performance(pipeline, number_of_runs, documents, models_path);
