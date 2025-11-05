@@ -240,7 +240,11 @@ int main(int argc, char* argv[]) try {
     // Average time for embedding 200 documents: 3146 ms
 
     // warm up
-    pipeline.embed_documents(documents);
+    try {
+        pipeline.embed_documents(documents);
+    } catch (const std::exception& e) {
+        std::cerr << "Warm-up embedding failed: " << e.what() << std::endl;
+    }
 
     const size_t number_of_runs = 20;
     measure_performance(pipeline, number_of_runs, documents, models_path);

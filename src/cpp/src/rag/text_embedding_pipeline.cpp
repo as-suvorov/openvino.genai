@@ -252,10 +252,10 @@ public:
     };
 
     ~TextEmbeddingPipelineImpl() {
-        // std::cout << "[TextEmbeddingPipelineImpl] Destructor called." << std::endl;
-        if (m_worker_thread && m_worker_thread->joinable()) {
-            m_worker_thread->join();
-            // std::cout << "[TextEmbeddingPipelineImpl] Worker thread joined." << std::endl;
+        try {
+            wait_embed();
+        } catch (...) {
+            // Destructor must not throw
         }
     }
 
@@ -392,6 +392,8 @@ private:
             m_worker_thread->join();
             std::cout << "[main] thread joined" << std::endl;
         }
+
+        m_worker_thread.reset();
 
         m_async_infer_queue->wait_all_idle();
         std::cout << "[main] all requests are idle" << std::endl;
