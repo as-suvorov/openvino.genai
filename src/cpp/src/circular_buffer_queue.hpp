@@ -84,7 +84,7 @@ public:
     bool all_idle() {
         std::unique_lock<std::mutex> lk(m_queue_mutex);
         const int back_idx = m_back_idx.load();
-        return m_values[back_idx] >= 0;
+        return m_values[back_idx] > -1;
     }
 };
 

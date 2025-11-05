@@ -7,6 +7,8 @@
 #include <thread>  // Required for std::this_thread::sleep_for
 
 #include "openvino/genai/rag/text_embedding_pipeline.hpp"
+#include "openvino/genai/tokenizer.hpp"
+#include "openvino/runtime/core.hpp"
 
 ov::AnyMap npu_fallback_config{
     {"NPU_USE_NPUW", "YES"},
@@ -147,6 +149,50 @@ void measure_performance(ov::genai::TextEmbeddingPipeline& pipeline,
               << " documents: " << static_cast<float>(duration) / no_of_runs << " ms\n";
 }
 
+void test_async_infer(std::string& models_path, const std::vector<std::string>& documents) {
+    ov::genai::Tokenizer tokenizer(models_path);
+
+    ov::Core core;
+    std::shared_ptr<ov::Model> model = core.read_model(models_path + "/openvino_model.xml");
+
+    ov::CompiledModel compiled_model = core.compile_model(model, "CPU");
+
+    ov::InferRequest infer_request = compiled_model.create_infer_request();
+
+    auto encoded_inputs = tokenizer.encode(documents);
+
+    infer_request.set_tensor("input_ids", encoded_inputs.input_ids);
+    infer_request.set_tensor("attention_mask", encoded_inputs.attention_mask);
+
+    ov::Tensor token_type_ids{ov::element::i64, encoded_inputs.input_ids.get_shape()};
+    std::fill_n(token_type_ids.data<int64_t>(), encoded_inputs.input_ids.get_size(), 0);
+    infer_request.set_tensor("token_type_ids", token_type_ids);
+
+
+    infer_request.wait();
+    infer_request.wait();
+
+    infer_request.start_async();
+    
+    infer_request.wait();
+    infer_request.wait();
+    infer_request.wait();
+    infer_request.wait();
+    infer_request.wait();
+}
+
+void test_pipe_async_infer(std::string& models_path, const std::vector<std::string>& documents) {
+    ov::genai::TextEmbeddingPipeline pipeline(models_path, "CPU");
+
+    auto embedding_results0 = pipeline.wait_embed_documents();
+    auto embedding_results1 = pipeline.wait_embed_documents();
+
+    pipeline.start_embed_documents_async(documents);
+
+    auto embedding_results2 = pipeline.wait_embed_documents();
+    auto embedding_results3 = pipeline.wait_embed_documents();
+}
+
 // todo: stalls on empty documents
 int main(int argc, char* argv[]) try {
     if (argc < 3) {
@@ -155,6 +201,8 @@ int main(int argc, char* argv[]) try {
     // auto documents = std::vector<std::string>(argv + 2, argv + argc);
 
     // const auto documents = generate_documents(9);
+
+    
 
     const auto documents = dataset_documents(TEXT_DATASET, 200);
     // std::vector<std::string> documents{
@@ -170,6 +218,9 @@ int main(int argc, char* argv[]) try {
     std::string models_path = argv[1];
 
     std::string device = "CPU";  // GPU can be used as well
+
+    // test_async_infer(models_path, documents);
+    // test_pipe_async_infer(models_path, documents);
 
     ov::genai::TextEmbeddingPipeline::Config config;
     // config.pooling_type = ov::genai::TextEmbeddingPipeline::PoolingType::MEAN;
@@ -193,8 +244,6 @@ int main(int argc, char* argv[]) try {
 
     const size_t number_of_runs = 20;
     measure_performance(pipeline, number_of_runs, documents, models_path);
-
-    ov::genai::EmbeddingResult query_embedding = pipeline.embed_query("What is the capital of France?");
 } catch (const std::exception& error) {
     try {
         std::cerr << error.what() << '\n';

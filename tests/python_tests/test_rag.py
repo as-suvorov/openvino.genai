@@ -17,6 +17,7 @@ from optimum.intel import OVModelForFeatureExtraction, OVModelForSequenceClassif
 from torch import Tensor
 import torch
 from utils.qwen3_reranker_utils import qwen3_reranker_format_queries, qwen3_reranker_format_document
+from openvino.runtime import properties
 
 EMBEDDINGS_TEST_MODELS = [
     "BAAI/bge-small-en-v1.5",
@@ -421,8 +422,8 @@ def dataset_embeddings_genai_default_config_refs(download_and_convert_embeddings
         # TextEmbeddingPipeline.Config(batch_size=4, max_length=50, pad_to_max_length=True),
         # TextEmbeddingPipeline.Config(batch_size=4, max_length=50, pad_to_max_length=True),
         # TextEmbeddingPipeline.Config(batch_size=1, max_length=64, pad_to_max_length=True),
-        TextEmbeddingPipeline.Config(batch_size=1, max_length=64, pad_to_max_length=True),
-        TextEmbeddingPipeline.Config(batch_size=1, max_length=64, pad_to_max_length=True),
+        TextEmbeddingPipeline.Config(batch_size=5, max_length=64, pad_to_max_length=True),
+        # TextEmbeddingPipeline.Config(batch_size=1, max_length=64, pad_to_max_length=True),
         # batch_size = 4, not seems to fail
         
         
@@ -434,16 +435,16 @@ def dataset_embeddings_genai_default_config_refs(download_and_convert_embeddings
 @pytest.mark.parametrize(
     "plugin_properties",
     [
-        # {properties.hint.performance_mode(): properties.hint.PerformanceMode.LATENCY},
+        {properties.hint.performance_mode(): properties.hint.PerformanceMode.LATENCY},
         {properties.hint.performance_mode(): properties.hint.PerformanceMode.THROUGHPUT},
     ],
 )
 @pytest.mark.precommit
-def test_fixed_shapes_configs(download_and_convert_embeddings_models, dataset_documents, config, dataset_embeddings_genai_default_config_refs):
+def test_fixed_shapes_configs(download_and_convert_embeddings_models, dataset_documents, config, dataset_embeddings_genai_default_config_refs, plugin_properties):
     _, _, models_path = download_and_convert_embeddings_models
 
     docs_to_embed = dataset_documents[: config.batch_size] if config.batch_size else dataset_documents
-    result = run_text_embedding_genai(models_path, docs_to_embed, config, "embed_documents")
+    result = run_text_embedding_genai(models_path, docs_to_embed, config, "embed_documents", plugin_properties)
 
     refs_to_validate = dataset_embeddings_genai_default_config_refs[: config.batch_size] if config.batch_size else dataset_embeddings_genai_default_config_refs
     validate_embedding_results(refs_to_validate, result)
