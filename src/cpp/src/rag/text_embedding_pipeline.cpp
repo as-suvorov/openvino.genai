@@ -4,7 +4,6 @@
 #include "openvino/genai/rag/text_embedding_pipeline.hpp"
 
 #include <fstream>
-#include <future>
 #include <nlohmann/json.hpp>
 
 #include "async_infer_request_queue.hpp"
@@ -244,24 +243,12 @@ public:
 
         utils::print_compiled_model_properties(compiled_model, "text embedding model");
 
-        std::cout << "Number of infer requests: " << compiled_model.get_property(ov::optimal_number_of_infer_requests)
-                  << std::endl;
-
         m_async_infer_queue =
             std::make_unique<AsyncInferRequestQueue>(compiled_model,
                                                      compiled_model.get_property(ov::optimal_number_of_infer_requests));
     };
 
-    ~TextEmbeddingPipelineImpl() {
-        try {
-            wait_embed();
-        } catch (...) {
-            // Destructor must not throw
-        }
-    }
-
     EmbeddingResults embed_documents(const std::vector<std::string>& texts) {
-        std::cout << "\n\n[main] Embedding " << texts.size() << " documents." << std::endl;
         start_embed_documents_async(texts);
         return wait_embed_documents();
     };
@@ -349,14 +336,12 @@ private:
     }
 
     EmbeddingResults embed_worker(const std::vector<std::string>& texts) {
-        std::cout << "[worker] thread started" << std::endl;
         m_embedding_results = std::vector<std::vector<float>>(texts.size());
         size_t batch_size = m_config.batch_size.value_or(4);
 
         const size_t num_batches = std::ceil(static_cast<float>(texts.size()) / batch_size);
 
         for (size_t batch = 0; batch < num_batches; ++batch) {
-            std::cout << "[worker] batch started: " << batch << std::endl;
             size_t start = batch * batch_size;
             size_t end = std::min(start + batch_size, texts.size());
             std::vector<std::string> batch_texts(texts.begin() + start, texts.begin() + end);
@@ -367,38 +352,26 @@ private:
 
             const auto encoded = m_tokenizer.encode(batch_texts, m_tokenization_params);
 
-            std::cout << "[worker] waiting for idle request..." << std::endl;
-
-            // todo: implement guard to return to queue in case of exception
             auto request = m_async_infer_queue->get_request();
-            std::cout << "[worker] got idle request id: " << request->get_queue_id() << std::endl;
 
             fill_inputs(encoded, request);
-
-            throw std::runtime_error("Debug exception");
 
             request->set_callback([this, request, batch, num_batches, start, end]() {
                 const Tensor last_hidden_state = request->get_tensor("last_hidden_state");
                 fill_embedding_results(last_hidden_state, {start, end});
             });
 
-            std::cout << "[worker] starting async request for batch: " << batch << std::endl;
             request->start_async();
         }
 
-        std::cout << "[worker] waiting for all async requests to complete..." << std::endl;
         m_async_infer_queue->wait_all_idle();
-        std::cout << "[worker] all requests are idle" << std::endl;
-
-        std::cout << "[worker] thread finished, returning results" << std::endl;
         return std::move(m_embedding_results);
     };
 
     EmbeddingResults wait_embed() {
-        std::cout << "[main] waiting for future result..." << std::endl;
         if (!m_future.valid()) {
-            std::cout << "[main] future is not valid, no async operation in progress" << std::endl;
-            return std::vector<std::vector<float>>{};  // Return empty results
+            // start_embed was not called or already waited
+            return std::vector<std::vector<float>>{};
         }
 
         return m_future.get();
@@ -440,9 +413,6 @@ private:
                 const auto batch_offset = batch_id * hidden_size;
                 const float* batch_data = last_hidden_state_data + batch_offset;
                 const std::vector<float> batch_result(batch_data, batch_data + hidden_size);
-
-                std::cout << "[worker] filling embedding results for batch " << batch_id + batch_range.first
-                          << ", size: " << batch_result.size() << std::endl;
 
                 auto& embedding_results = std::get<std::vector<std::vector<float>>>(m_embedding_results);
                 embedding_results[batch_id + batch_range.first] = batch_result;

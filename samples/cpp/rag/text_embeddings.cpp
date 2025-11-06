@@ -231,7 +231,15 @@ int main(int argc, char* argv[]) try {
     ov::AnyMap properties{{ov::hint::performance_mode.name(), ov::hint::PerformanceMode::THROUGHPUT}};
     // properties.insert(npu_fallback_config.begin(), npu_fallback_config.end());
 
-    ov::genai::TextEmbeddingPipeline pipeline(models_path, device, config);
+    ov::genai::TextEmbeddingPipeline pipeline(models_path, device, config, properties);
+
+    // latency
+    // Total time for embedding 9 documents at 20 runs: 12255 ms
+    // Average time for embedding 9 documents: 612.75 ms
+
+    // throughput
+    // Total time for embedding 9 documents at 20 runs: 3639 ms
+    // Average time for embedding 9 documents: 181.95 ms
 
     // Optimal number of infer requests: 8
     // Optimal number of infer requests: 8
@@ -240,18 +248,8 @@ int main(int argc, char* argv[]) try {
     // Average time for embedding 200 documents: 3146 ms
 
     // warm up
-
-    try {
-        pipeline.start_embed_documents_async(documents);
-    } catch (const std::exception& e) {
-        std::cerr << "Warm-up embedding failed: " << e.what() << std::endl;
-    }
-    
-    try {
-        pipeline.wait_embed_documents();
-    } catch (const std::exception& e) {
-        std::cerr << "Warm-up embedding failed: " << e.what() << std::endl;
-    }
+    pipeline.start_embed_documents_async(documents);
+    pipeline.wait_embed_documents();
 
     // try {
     //     pipeline.embed_documents(documents);
