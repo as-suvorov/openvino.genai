@@ -442,6 +442,10 @@ void truncate_long_words_at_sentence_boundaries(std::vector<ov::genai::WhisperWo
 
 // https://github.com/openai/whisper/blob/v20250625/whisper/timing.py#L245
 std::vector<ov::genai::WhisperWordTiming> merge_punctuations(std::vector<ov::genai::WhisperWordTiming>& words) {
+    if (words.size() < 2) {
+        return words;
+    }
+
     const std::string prepend_punctuations = "\"'“¿([{-";
     const std::string append_punctuations = "\"'.。,，!！?？:：”)]}、";
 
@@ -451,7 +455,7 @@ std::vector<ov::genai::WhisperWordTiming> merge_punctuations(std::vector<ov::gen
     while (i < words.size()) {
         auto& previous = words[i];
         auto& following = words[j];
-        if (!previous.word.empty() && previous.word[0] == ' ' &&
+        if (previous.word.size() > 1 && previous.word[0] == ' ' &&
             prepend_punctuations.find(previous.word.substr(1)) != std::string::npos) {
             // prepend it to the following word
             following.word = previous.word + following.word;
@@ -475,7 +479,7 @@ std::vector<ov::genai::WhisperWordTiming> merge_punctuations(std::vector<ov::gen
     while (j < words.size()) {
         auto& previous = words[i];
         auto& following = words[j];
-        if (!previous.word.empty() && previous.word.back() != ' ' &&
+        if (!previous.word.empty() && previous.word.back() != ' ' && following.word.size() == 1 &&
             append_punctuations.find(following.word) != std::string::npos) {
             // append it to the previous word
             previous.word = previous.word + following.word;
