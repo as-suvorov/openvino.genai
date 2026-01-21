@@ -17,14 +17,25 @@ int main(int argc, char* argv[]) try {
 
     std::filesystem::path models_path = argv[1];
     std::string wav_file_path = argv[2];
-    std::string device = (argc == 4) ? argv[3] : "CPU";  // Default to CPU if no device is provided
+    std::string device = (argc == 4) ? argv[3] : "NPU";  // Default to CPU if no device is provided
+
+    // config = {"NPU_USE_NPUW" : "YES",
+    //       "NPUW_DEVICES" : "CPU",
+    //       "NPUW_ONLINE_PIPELINE" : "NONE",
+    //       "STATIC_PIPELINE": True}
 
     ov::AnyMap ov_config;
-    if (device == "NPU" || device.find("GPU") != std::string::npos) {  // need to handle cases like "GPU", "GPU.0" and "GPU.1"
+    if (device == "NPU" ||
+        device.find("GPU") != std::string::npos) {  // need to handle cases like "GPU", "GPU.0" and "GPU.1"
         // Cache compiled models on disk for GPU and NPU to save time on the
         // next run. It's not beneficial for CPU.
         ov_config = get_config_for_cache();
+        ov_config.insert({"STATIC_PIPELINE", true});
+        ov_config.insert({"NPU_USE_NPUW", "YES"});
+        ov_config.insert({"NPUW_DEVICES", "CPU"});
+        ov_config.insert({"NPUW_ONLINE_PIPELINE", "NONE"});
     }
+    ov_config.insert({ov::genai::word_timestamps(true)});
 
     ov::genai::WhisperPipeline pipeline(models_path, device, ov_config);
 
@@ -33,6 +44,7 @@ int main(int argc, char* argv[]) try {
     config.language = "<|en|>";  // can switch to <|zh|> for Chinese language
     config.task = "transcribe";
     config.return_timestamps = true;
+    config.word_timestamps = true;
 
     // Pipeline expects normalized audio with Sample Rate of 16kHz
     ov::genai::RawSpeechInput raw_speech = utils::audio::read_wav(wav_file_path);
@@ -43,6 +55,10 @@ int main(int argc, char* argv[]) try {
     std::cout << std::fixed << std::setprecision(2);
     for (auto& chunk : *result.chunks) {
         std::cout << "timestamps: [" << chunk.start_ts << ", " << chunk.end_ts << "] text: " << chunk.text << "\n";
+    }
+
+    for (auto& word : *result.words) {
+        std::cout << "word: \"" << word.word << "\" timestamps: [" << word.start_ts << ", " << word.end_ts << "]\n";
     }
 
 } catch (const std::exception& error) {
