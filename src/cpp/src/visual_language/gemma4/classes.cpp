@@ -288,11 +288,25 @@ ov::Tensor InputsEmbedderGemma4::apply_chat_template_tokenize(const std::string&
     return IInputsEmbedder::apply_chat_template_tokenize(adjusted_prompt, metrics);
 }
 
+bool InputsEmbedderGemma4::has_token_type_ids() const {
+    return true;
+}
+
 ov::Tensor InputsEmbedderGemma4::get_inputs_embeds(const std::string& prompt,
                                                    const std::vector<EncodedImage>& images,
                                                    VLMPerfMetrics& metrics,
                                                    bool recalculate_merged_embeddings,
                                                    const std::vector<size_t>& images_sequence) {
+    return get_inputs_embeds_with_token_type_ids(prompt, images, metrics, recalculate_merged_embeddings, images_sequence).first;
+}
+
+std::pair<ov::Tensor, ov::Tensor> InputsEmbedderGemma4::get_inputs_embeds_with_token_type_ids(
+    const std::string& prompt,
+    const std::vector<EncodedImage>& images,
+    VLMPerfMetrics& metrics,
+    bool recalculate_merged_embeddings,
+    const std::vector<size_t>& images_sequence) {
+
     std::vector<ov::Tensor> image_embeds;
     image_embeds.reserve(images_sequence.size());
     for (size_t new_image_id : images_sequence) {
@@ -308,9 +322,12 @@ ov::Tensor InputsEmbedderGemma4::get_inputs_embeds(const std::string& prompt,
     ov::Tensor text_embeds = m_embedding->infer(req, input_ids);
 
     if (images.empty()) {
+        const size_t seq_len = text_embeds.get_shape()[1];
         ov::Tensor inputs_embeds(text_embeds.get_element_type(), text_embeds.get_shape());
         std::memcpy(inputs_embeds.data(), text_embeds.data(), text_embeds.get_byte_size());
-        return inputs_embeds;
+        ov::Tensor token_type_ids(ov::element::i64, {1, seq_len});
+        std::fill_n(token_type_ids.data<int64_t>(), seq_len, int64_t{0});
+        return {inputs_embeds, token_type_ids};
     }
 
     auto start_tokenizer_time = std::chrono::steady_clock::now();
@@ -322,9 +339,17 @@ ov::Tensor InputsEmbedderGemma4::get_inputs_embeds(const std::string& prompt,
         ov::genai::MicroSeconds(PerfMetrics::get_microsec(end_tokenizer_time - start_tokenizer_time));
     int64_t image_token_id = encoded_image_token.data<int64_t>()[encoded_image_token.get_size() - 1];
 
-    auto merged = utils::merge_text_and_image_embeddings_llava(input_ids, text_embeds, image_embeds, image_token_id);
+    auto inputs_embeds = utils::merge_text_and_image_embeddings_llava(input_ids, text_embeds, image_embeds, image_token_id);
 
-    return merged;
+    const int64_t* input_ids_data = input_ids.data<const int64_t>();
+    const size_t num_elements = input_ids.get_size();
+    ov::Tensor token_type_ids(ov::element::i64, input_ids.get_shape());
+    int64_t* token_type_data = token_type_ids.data<int64_t>();
+    for (size_t i = 0; i < num_elements; ++i) {
+        token_type_data[i] = (input_ids_data[i] == image_token_id) ? 1 : 0;
+    }
+
+    return {inputs_embeds, token_type_ids};
 }
 
 const std::unordered_map<std::string, ov::Tensor>& InputsEmbedderGemma4::get_lm_extra_inputs() const {

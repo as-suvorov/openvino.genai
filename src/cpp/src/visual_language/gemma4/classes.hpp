@@ -38,6 +38,15 @@ public:
                                  bool recalculate_merged_embeddings = true,
                                  const std::vector<size_t>& image_sequence = {}) override;
 
+    std::pair<ov::Tensor, ov::Tensor> get_inputs_embeds_with_token_type_ids(
+        const std::string& prompt,
+        const std::vector<ov::genai::EncodedImage>& images,
+        ov::genai::VLMPerfMetrics& metrics,
+        bool recalculate_merged_embeddings = true,
+        const std::vector<size_t>& image_sequence = {}) override;
+
+    bool has_token_type_ids() const override;
+
     ov::Tensor apply_chat_template_tokenize(const std::string& prompt, ov::genai::VLMPerfMetrics& metrics) override;
 
     std::vector<ov::genai::EncodedImage> encode_images(const std::vector<ov::Tensor>& images) override;
