@@ -112,6 +112,7 @@ export const LLM_MODELS: LLMModelType[] = [
       {
         name: 'Aya',
         links: [
+          'https://huggingface.co/CohereLabs/tiny-aya-base',
           'https://huggingface.co/CohereLabs/aya-23-8B',
           'https://huggingface.co/CohereLabs/aya-expanse-8b',
           'https://huggingface.co/CohereLabs/aya-23-35B',
