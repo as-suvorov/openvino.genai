@@ -326,7 +326,7 @@ class SequenceGroup  : public std::enable_shared_from_this<SequenceGroup> {
 
     ov::Tensor m_deepstack_visual_embeds;
     std::optional<std::vector<bool>> m_visual_pos_masks;
-    ov::Tensor m_per_layer_inputs;  // Gemma4: per-layer text embeddings for prefill
+    std::vector<int64_t> m_per_layer_input_ids;  // Gemma4: unified token IDs for per-layer embeddings callback
 
     std::vector<float> m_prompt_log_probs;
     GenerationStream::Ptr m_generation_stream;
@@ -426,9 +426,8 @@ public:
                         tensor.copy_to(m_deepstack_visual_embeds);
                     } else if (input_name == "visual_pos_masks") {
                         m_visual_pos_masks = std::vector<bool>(tensor.data<const bool>(), tensor.data<const bool>() + tensor.get_size());
-                    } else if (input_name == "per_layer_inputs" && tensor.get_size() > 0) {
-                        m_per_layer_inputs = ov::Tensor(tensor.get_element_type(), tensor.get_shape());
-                        tensor.copy_to(m_per_layer_inputs);
+                    } else if (input_name == "per_layer_input_ids" && tensor.get_size() > 0) {
+                        m_per_layer_input_ids = std::vector<int64_t>(tensor.data<const int64_t>(), tensor.data<const int64_t>() + tensor.get_size());
                     }
                 }
             }
@@ -743,8 +742,8 @@ public:
         return m_visual_pos_masks;
     }
 
-    const ov::Tensor& get_per_layer_inputs() const {
-        return m_per_layer_inputs;
+    const std::vector<int64_t>& get_per_layer_input_ids() const {
+        return m_per_layer_input_ids;
     }
 
     size_t get_hidden_size() const {

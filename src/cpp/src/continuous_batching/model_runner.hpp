@@ -404,10 +404,11 @@ public:
         int64_t *input_ids_data = nullptr;
         int64_t *token_type_ids_data = nullptr;
 
-        // Collect token IDs for EMBEDDINGS decode step (for per-layer embeddings callback)
-        std::vector<int64_t> per_layer_input_ids_vec;
-        // Per-layer inputs for the current batch (Gemma4)
-        ov::Tensor per_layer_inputs_for_batch;
+        // Per-layer batch token IDs for Gemma4 per-layer embeddings (both prefill and decode)
+        std::function<ov::Tensor(const ov::Tensor&)> per_layer_cb;
+        if (m_inputs_embedder)
+            per_layer_cb = m_inputs_embedder->get_per_layer_embeddings_callback();
+        std::vector<int64_t> per_layer_batch_ids;
 
         ov::Tensor deepstack_visual_embeds;
         ov::Tensor visual_pos_masks;
@@ -582,35 +583,19 @@ public:
                         const auto& position_ids_elem = sequence->get_position_ids_list()[position_id];
                         const auto [begin, end] = Sequence::get_position_ids_elem_coordinates(position_ids_elem.get_shape(), position_ids_idx, false);
 
-                        // Collect token IDs for per-layer embeddings callback (decode phase)
-                        if (position_id >= prompt_len) {
-                            per_layer_input_ids_vec.push_back(sequence->get_generated_ids()[position_id - prompt_len]);
-                        }
-                        // Prefill: slice per_layer_inputs for this sequence group (pick current token rows)
-                        // Note: after SDPAToPagedAttention, inputs_embeds is [total_tokens, 1, hidden] (unsqueezed).
-                        // per_layer_inputs must match as [total_tokens, 1, n_layers, fdim] for correct element-wise add.
-                        // Stored per_layer_inputs is [1, full_seq, n_layers, fdim]; slice and transpose to [n_sched, 1, n_layers, fdim].
-                        if (position_id < prompt_len && !per_layer_inputs_for_batch && seq_idx == 0) {
-                            const ov::Tensor& stored_pli = sequence_group->get_per_layer_inputs();
-                            if (stored_pli.get_size() > 0 && stored_pli.get_shape().size() == 4) {
-                                const auto& sp = stored_pli.get_shape();
-                                size_t start_pos = group_position_id;
-                                size_t n_sched = std::min(num_scheduled_tokens, sp[1] > start_pos ? sp[1] - start_pos : size_t(0));
-                                size_t n_layers = sp[2], fdim = sp[3];
-                                // Slice stored_pli [1, full_seq, n_layers, fdim] -> transposed [n_sched, 1, n_layers, fdim]
-                                ov::Tensor transposed(stored_pli.get_element_type(), {n_sched, 1, n_layers, fdim});
-                                const float* src = stored_pli.data<const float>();
-                                float* dst = transposed.data<float>();
-                                size_t row_size = n_layers * fdim;
-                                for (size_t t = 0; t < n_sched; ++t) {
-                                    const float* src_row = src + (start_pos + t) * row_size;
-                                    float* dst_row = dst + t * row_size;
-                                    std::copy_n(src_row, row_size, dst_row);
-                                }
-                                per_layer_inputs_for_batch = transposed;
+                        // Collect token IDs for per-layer embeddings (Gemma4, both prefill and decode)
+                        if (per_layer_cb) {
+                            if (position_id < prompt_len) {
+                                // Prefill: use unified token IDs stored in sequence group
+                                const auto& pli_ids = sequence_group->get_per_layer_input_ids();
+                                per_layer_batch_ids.push_back(
+                                    position_id < pli_ids.size() ? pli_ids[position_id] : int64_t{0});
+                            } else {
+                                // Decode: use generated token ID
+                                per_layer_batch_ids.push_back(
+                                    sequence->get_generated_ids()[position_id - prompt_len]);
                             }
                         }
-
                         ov::Tensor dst_roi(position_ids, begin, end);
                         position_ids_elem.copy_to(dst_roi);
                     } else {
@@ -705,18 +690,16 @@ public:
                 m_request.set_tensor("token_type_ids", token_type_ids);
             }
 
-            // Set per-layer inputs (Gemma4)
-            if (!per_layer_input_ids_vec.empty() && m_inputs_embedder) {
-                // Decode step: compute per-layer embeddings via callback
-                auto per_layer_callback = m_inputs_embedder->get_per_layer_embeddings_callback();
-                if (per_layer_callback) {
-                    ov::Tensor decode_input_ids(ov::element::i64, {1, per_layer_input_ids_vec.size()},
-                                                per_layer_input_ids_vec.data());
-                    per_layer_inputs_for_batch = per_layer_callback(decode_input_ids);
-                }
-            }
-            if (per_layer_inputs_for_batch) {
-                try { m_request.set_tensor("per_layer_inputs", per_layer_inputs_for_batch); } catch (...) {}
+            // Set per-layer inputs (Gemma4) via callback for both prefill and decode
+            if (per_layer_cb && !per_layer_batch_ids.empty()) {
+                ov::Tensor cb_input(ov::element::i64, {1, per_layer_batch_ids.size()}, per_layer_batch_ids.data());
+                ov::Tensor pli = per_layer_cb(cb_input);
+                // Callback output is [1, n, n_layers, fdim]; PA model expects [n, 1, n_layers, fdim].
+                // Memory layout is identical so set_shape() is sufficient.
+                const auto& s = pli.get_shape();
+                if (s.size() == 4 && s[0] == 1 && s[1] > 1)
+                    pli.set_shape({s[1], s[0], s[2], s[3]});
+                try { m_request.set_tensor("per_layer_inputs", pli); } catch (...) {}
             }
             
             if (deepstack_context.have_deepstack_visual_inputs) {
