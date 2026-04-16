@@ -326,7 +326,7 @@ class SequenceGroup  : public std::enable_shared_from_this<SequenceGroup> {
 
     ov::Tensor m_deepstack_visual_embeds;
     std::optional<std::vector<bool>> m_visual_pos_masks;
-    std::vector<int64_t> m_per_layer_input_ids;  // Gemma4: unified token IDs for per-layer embeddings callback
+    std::vector<int64_t> m_per_layer_input_ids;
 
     std::vector<float> m_prompt_log_probs;
     GenerationStream::Ptr m_generation_stream;

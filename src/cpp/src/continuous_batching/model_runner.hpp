@@ -404,7 +404,6 @@ public:
         int64_t *input_ids_data = nullptr;
         int64_t *token_type_ids_data = nullptr;
 
-        // Per-layer batch token IDs for Gemma4 per-layer embeddings (both prefill and decode)
         std::function<ov::Tensor(const ov::Tensor&)> per_layer_cb;
         if (m_inputs_embedder)
             per_layer_cb = m_inputs_embedder->get_per_layer_embeddings_callback();
@@ -583,15 +582,12 @@ public:
                         const auto& position_ids_elem = sequence->get_position_ids_list()[position_id];
                         const auto [begin, end] = Sequence::get_position_ids_elem_coordinates(position_ids_elem.get_shape(), position_ids_idx, false);
 
-                        // Collect token IDs for per-layer embeddings (Gemma4, both prefill and decode)
                         if (per_layer_cb) {
                             if (position_id < prompt_len) {
-                                // Prefill: use unified token IDs stored in sequence group
                                 const auto& pli_ids = sequence_group->get_per_layer_input_ids();
                                 per_layer_batch_ids.push_back(
                                     position_id < pli_ids.size() ? pli_ids[position_id] : int64_t{0});
                             } else {
-                                // Decode: use generated token ID
                                 per_layer_batch_ids.push_back(
                                     sequence->get_generated_ids()[position_id - prompt_len]);
                             }

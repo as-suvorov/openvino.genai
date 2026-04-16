@@ -315,9 +315,7 @@ std::pair<ov::Tensor, ov::Tensor> InputsEmbedderGemma4::get_inputs_embeds_with_t
 
     ov::Tensor input_ids = get_encoded_input_ids(prompt, metrics);
 
-    // Store unified input_ids for CB pipeline (avoids re-computing per chunk during chunked prefill)
     m_lm_extra_inputs["per_layer_input_ids"] = input_ids;
-    // Store full per_layer_inputs tensor for non-CB pipeline (lm_encoding.cpp uses it directly)
     m_lm_extra_inputs["per_layer_inputs"] = get_per_layer_embeddings(input_ids);
 
     CircularBufferQueueElementGuard<EmbeddingsRequest> embeddings_request_guard(m_embedding->get_request_queue().get());
