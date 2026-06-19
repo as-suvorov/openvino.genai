@@ -24,7 +24,6 @@ env:
   CCACHE_MAXSIZE: 500Mi
   HF_HOME: C:/mount/caches/huggingface/win
   OV_CACHE: C:/mount/caches/huggingface/.ov_cache/win/775cf1/
-  OPENVINO_LOG_LEVEL: 2  # Windows fails with out of memory because of too verbose logging
   ARTIFACTS_SHARE: '/mount/build-artifacts'
   BASE_PRODUCT_TYPE: public_windows_vs2022
   GENAI_WHEELS_ARTIFACT_NAME: 'genai_wheels'
@@ -949,9 +948,6 @@ jobs:
       INSTALL_DIR: ${{ github.workspace }}/install
       SRC_DIR: ${{ github.workspace }}/src
       BUILD_DIR: ${{ github.workspace }}/build
-      # The debug logging includes messages about the time it takes to read the GGUF model.
-      # These messages differ from run to run, so we cannot compare the results of the CPP, Python, and JavaScript parts.
-      OPENVINO_LOG_LEVEL: 1
 
     steps:
       - name: Clone openvino.genai
